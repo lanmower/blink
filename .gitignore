@@ -18,3 +18,5 @@ blink.log
 /perf.data.old
 /third_party/cosmo/**/*.com
 /third_party/cosmo/**/*.dbg
+config.bat
+node_modules
