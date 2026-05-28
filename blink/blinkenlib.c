@@ -103,6 +103,26 @@ u32 fb_width = 0;
 u32 fb_height = 0;
 u32 fb_stride = 0;   /* bytes per row; 0 means width*4 */
 u32 fb_generation = 0;
+
+/*
+ * Input event ring buffer (host -> guest).
+ *
+ * The JS host pushes keyboard/mouse events with blinkenlib_push_input(); the
+ * guest drains them via the synthetic syscall SYS_blinkenlib_input_read
+ * (0x5fc), which copies up to N packed 16-byte events into a guest buffer and
+ * returns the count. This is the input counterpart to the framebuffer path:
+ * host produces, guest consumes, no shared-memory polling required on the
+ * guest side. The packed event layout MUST match the guest's struct:
+ *   struct blinkenlib_input_event { u16 type; u16 code; i32 x; i32 y;
+ *                                   i32 value; u32 _pad; }  // 16 bytes
+ * type: 1=key, 2=motion, 3=button. For key/button, code=keycode/button and
+ * value=1(down)/0(up). For motion, x/y hold absolute guest coords.
+ */
+#define BLINKENLIB_INPUT_RING 256  /* power-of-two event slots */
+#define BLINKENLIB_INPUT_EVSZ 16   /* bytes per packed event */
+static u8 input_ring[BLINKENLIB_INPUT_RING * BLINKENLIB_INPUT_EVSZ];
+static u32 input_head = 0;  /* next slot the host writes */
+static u32 input_tail = 0;  /* next slot the guest reads */
 static struct Dis dis[1];
 bool single_stepping = false;
 bool debugger_enabled = false;
@@ -539,6 +559,56 @@ u8 *blinkenlib_get_fb_ptr(void) {
   BEGIN_NO_PAGE_FAULTS;
   return SpyAddress(m, fb_vaddr);
   END_NO_PAGE_FAULTS;
+}
+
+/* -------------------- */
+/* Input event device   */
+/* -------------------- */
+
+/*
+ * Host pushes one input event into the ring. Called from JS via
+ * blinkenlib_push_input(type, code, x, y, value). If the ring is full the
+ * oldest event is dropped (advance tail) so the most recent input always
+ * lands -- a stuck/slow guest must not wedge the host.
+ */
+EMSCRIPTEN_KEEPALIVE
+void blinkenlib_push_input(u32 type, u32 code, i32 x, i32 y, i32 value) {
+  u8 *slot = input_ring + (input_head % BLINKENLIB_INPUT_RING) * BLINKENLIB_INPUT_EVSZ;
+  u16 t16 = (u16)type, c16 = (u16)code;
+  memcpy(slot + 0, &t16, 2);
+  memcpy(slot + 2, &c16, 2);
+  memcpy(slot + 4, &x, 4);
+  memcpy(slot + 8, &y, 4);
+  memcpy(slot + 12, &value, 4);
+  input_head++;
+  /* If head laps tail the buffer is full; drop the oldest. */
+  if (input_head - input_tail > BLINKENLIB_INPUT_RING) {
+    input_tail = input_head - BLINKENLIB_INPUT_RING;
+  }
+}
+
+/* Number of unread events currently queued. */
+EMSCRIPTEN_KEEPALIVE
+u32 blinkenlib_input_pending(void) { return input_head - input_tail; }
+
+/*
+ * Drain up to max_events into the guest buffer at gva (guest virtual addr).
+ * Returns the number of events written. Used by SYS_blinkenlib_input_read.
+ * Each event is BLINKENLIB_INPUT_EVSZ bytes; the guest buffer must hold
+ * max_events * 16 bytes. Copies through SpyAddress so it respects guest paging.
+ */
+int blinkenlib_input_drain(struct Machine *mm, u64 gva, u32 max_events) {
+  u32 n = 0;
+  if (!mm || !gva) return 0;
+  while (n < max_events && input_tail != input_head) {
+    u8 *src = input_ring + (input_tail % BLINKENLIB_INPUT_RING) * BLINKENLIB_INPUT_EVSZ;
+    u8 *dst = SpyAddress(mm, gva + (u64)n * BLINKENLIB_INPUT_EVSZ);
+    if (!dst) break;
+    memcpy(dst, src, BLINKENLIB_INPUT_EVSZ);
+    input_tail++;
+    n++;
+  }
+  return (int)n;
 }
 
 EMSCRIPTEN_KEEPALIVE

@@ -5480,6 +5480,23 @@ static int SysBlinkenlibFbRegister(struct Machine *m, u64 vaddr, u64 width,
 }
 #endif
 
+/*
+ * Synthetic syscall 0x5fc: blinkenlib input read.
+ * Drains up to max_events host-queued input events into the guest buffer at
+ * gva (each event is 16 packed bytes; see blinkenlib.c). Returns the number
+ * of events written. On native blink it is a no-op returning 0.
+ */
+#ifdef __EMSCRIPTEN__
+static int SysBlinkenlibInputRead(struct Machine *m, u64 gva, u64 max_events) {
+  return blinkenlib_input_drain(m, gva, (u32)max_events);
+}
+#else
+static int SysBlinkenlibInputRead(struct Machine *m, u64 gva, u64 max_events) {
+  (void)m, (void)gva, (void)max_events;
+  return 0;
+}
+#endif
+
 void OpSyscall(P) {
   size_t mark;
   u64 ax, di, si, dx, r0, r8, r9;
@@ -5538,6 +5555,8 @@ void OpSyscall(P) {
     SYSCALL(6, 0x009, "mmap", SysMmap, STRACE_MMAP);
     SYSCALL(4, 0x5fb, "blinkenlib_fb_register", SysBlinkenlibFbRegister,
             STRACE_4);
+    SYSCALL(2, 0x5fc, "blinkenlib_input_read", SysBlinkenlibInputRead,
+            STRACE_2);
     SYSCALL(4, 0x011, "pread", SysPread, STRACE_PREAD);
     SYSCALL(4, 0x012, "pwrite", SysPwrite, STRACE_PWRITE);
     SYSCALL(5, 0x017, "select", SysSelect, STRACE_SELECT);

@@ -90,4 +90,15 @@ u32 blinkenlib_get_fb_stride(void);
 u32 blinkenlib_get_fb_generation(void);
 u8 *blinkenlib_get_fb_ptr(void);
 
+/*
+ * Input event device (host -> guest). blinkenlib_push_input is called by the
+ * JS host; blinkenlib_input_drain is called by SYS_blinkenlib_input_read to
+ * copy queued events into a guest buffer. blinkenlib_input_pending reports the
+ * unread count.
+ */
+struct Machine;
+void blinkenlib_push_input(u32 type, u32 code, i32 x, i32 y, i32 value);
+u32 blinkenlib_input_pending(void);
+int blinkenlib_input_drain(struct Machine *mm, u64 gva, u32 max_events);
+
 #endif /* BLINK_BLINKENLIB_H_ */
