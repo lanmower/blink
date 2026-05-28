@@ -5449,6 +5449,37 @@ static int SysEpollWait(struct Machine *m, i32 epfd, i64 eventsaddr,
 
 #endif /* HAVE_EPOLL_PWAIT1 */
 
+/*
+ * Synthetic syscall 0x5fb: blinkenlib framebuffer register.
+ * The guest publishes the guest-virtual address and geometry of its RGBA
+ * framebuffer so the JS host can map it zero-copy (via spy_address) and blit
+ * it to a canvas. Only meaningful in the emscripten/blinkenlib build; on
+ * native blink it is a no-op returning 0. Bumping fb_generation lets the host
+ * skip blits when nothing changed. Passing vaddr==0 with a nonzero width is
+ * treated as a flip-only signal (just bump the generation).
+ */
+#ifdef __EMSCRIPTEN__
+#include "blink/blinkenlib.h"
+static int SysBlinkenlibFbRegister(struct Machine *m, u64 vaddr, u64 width,
+                                   u64 height, u64 stride) {
+  (void)m;
+  if (vaddr) {
+    fb_vaddr = vaddr;
+    fb_width = (u32)width;
+    fb_height = (u32)height;
+    fb_stride = (u32)stride;
+  }
+  fb_generation++;
+  return 0;
+}
+#else
+static int SysBlinkenlibFbRegister(struct Machine *m, u64 vaddr, u64 width,
+                                   u64 height, u64 stride) {
+  (void)m, (void)vaddr, (void)width, (void)height, (void)stride;
+  return 0;
+}
+#endif
+
 void OpSyscall(P) {
   size_t mark;
   u64 ax, di, si, dx, r0, r8, r9;
@@ -5505,6 +5536,8 @@ void OpSyscall(P) {
     SYSCALL(3, 0x007, "poll", SysPoll, STRACE_3);
     SYSCALL(3, 0x008, "lseek", SysLseek, STRACE_LSEEK);
     SYSCALL(6, 0x009, "mmap", SysMmap, STRACE_MMAP);
+    SYSCALL(4, 0x5fb, "blinkenlib_fb_register", SysBlinkenlibFbRegister,
+            STRACE_4);
     SYSCALL(4, 0x011, "pread", SysPread, STRACE_PREAD);
     SYSCALL(4, 0x012, "pwrite", SysPwrite, STRACE_PWRITE);
     SYSCALL(5, 0x017, "select", SysSelect, STRACE_SELECT);

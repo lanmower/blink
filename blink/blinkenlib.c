@@ -76,9 +76,10 @@ char dis_buffer[DIS_MAX_LINES][DIS_MAX_LINE_LEN] = {0};
  * The pointers to these strings will be passed to js,
  * and the content will be dynamically set by js
  */
-#define ARGC_MAX_LINE_LEN     200
-#define ARGV_MAX_LINE_LEN     200
-#define PROGNAME_MAX_LINE_LEN 200
+#define ARGC_MAX_LINE_LEN     4096
+#define ARGV_MAX_LINE_LEN     4096
+#define PROGNAME_MAX_LINE_LEN 1024
+#define ARGC_MAX_ARGS         256
 char argc_string[ARGC_MAX_LINE_LEN] = {0};
 char argv_string[ARGV_MAX_LINE_LEN] = {0};
 char progname_string[PROGNAME_MAX_LINE_LEN] = {0};
@@ -86,6 +87,22 @@ char progname_string[PROGNAME_MAX_LINE_LEN] = {0};
 struct clstruct cls;
 struct System *s;
 struct Machine *m;
+
+/*
+ * Framebuffer registration published by the guest.
+ * The guest (e.g. an fbdev X server or a direct-render app) registers the
+ * guest virtual address and geometry of its RGBA framebuffer via the
+ * synthetic syscall SYS_blinkenlib_fb_register (see syscall.c). The host
+ * then reads the geometry with the blinkenlib_get_fb_* getters and maps the
+ * pixels zero-copy through blinkenlib_spy_address(fb_vaddr). fb_generation is
+ * bumped on every registration and on every guest-signalled flip so the host
+ * can skip blits when nothing changed.
+ */
+u64 fb_vaddr = 0;
+u32 fb_width = 0;
+u32 fb_height = 0;
+u32 fb_stride = 0;   /* bytes per row; 0 means width*4 */
+u32 fb_generation = 0;
 static struct Dis dis[1];
 bool single_stepping = false;
 bool debugger_enabled = false;
@@ -340,12 +357,21 @@ void TearDown(void) {
   memset(dis_buffer, 0, sizeof(dis_buffer));
 }
 
-void stringToArgsArray(char *argsString, char **argsArray, int maxArgs) {
+/*
+ * Parse a NUL-separated argv buffer into an argv array.
+ * The buffer holds each argument terminated by '\0', with the
+ * whole list terminated by an empty argument (a second '\0').
+ * This preserves spaces inside arguments, unlike the previous
+ * space-splitting scheme which broke any multi-word argument.
+ * maxLen bounds how far into the buffer we will read.
+ */
+void stringToArgsArray(char *argsString, char **argsArray, int maxLen) {
   int count = 0;
-  char *token = strtok(argsString, " ");
-  while (token != NULL && count < maxArgs - 1) {
-    argsArray[count++] = token;
-    token = strtok(NULL, " ");
+  int i = 0;
+  while (i < maxLen && argsString[i] != '\0' && count < ARGC_MAX_ARGS - 1) {
+    argsArray[count++] = &argsString[i];
+    while (i < maxLen && argsString[i] != '\0') i++;
+    i++;  // step over the terminating NUL
   }
   argsArray[count] = NULL;
 }
@@ -479,6 +505,39 @@ EMSCRIPTEN_KEEPALIVE
 u8 *blinkenlib_spy_address(u64 virtual_address) {
   BEGIN_NO_PAGE_FAULTS;
   return SpyAddress(m, virtual_address);
+  END_NO_PAGE_FAULTS;
+}
+
+/* -------------------- */
+/* Framebuffer getters  */
+/* -------------------- */
+
+EMSCRIPTEN_KEEPALIVE
+u64 blinkenlib_get_fb_vaddr(void) { return fb_vaddr; }
+
+EMSCRIPTEN_KEEPALIVE
+u32 blinkenlib_get_fb_width(void) { return fb_width; }
+
+EMSCRIPTEN_KEEPALIVE
+u32 blinkenlib_get_fb_height(void) { return fb_height; }
+
+EMSCRIPTEN_KEEPALIVE
+u32 blinkenlib_get_fb_stride(void) {
+  return fb_stride ? fb_stride : fb_width * 4;
+}
+
+EMSCRIPTEN_KEEPALIVE
+u32 blinkenlib_get_fb_generation(void) { return fb_generation; }
+
+/*
+ * Host pointer to the start of the registered framebuffer, or 0 if the guest
+ * has not registered one yet. Convenience wrapper over spy_address(fb_vaddr).
+ */
+EMSCRIPTEN_KEEPALIVE
+u8 *blinkenlib_get_fb_ptr(void) {
+  if (!fb_vaddr || !m) return 0;
+  BEGIN_NO_PAGE_FAULTS;
+  return SpyAddress(m, fb_vaddr);
   END_NO_PAGE_FAULTS;
 }
 

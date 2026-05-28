@@ -73,4 +73,21 @@ void *blinkenlib_get_argv_string();
 void *blinkenlib_get_progname_string();
 u8 *blinkenlib_spy_address(u64 virtual_address);
 
+/*
+ * Framebuffer registration, published by the guest via the synthetic
+ * SYS_blinkenlib_fb_register syscall and read by the JS host.
+ */
+extern u64 fb_vaddr;
+extern u32 fb_width;
+extern u32 fb_height;
+extern u32 fb_stride;
+extern u32 fb_generation;
+
+u64 blinkenlib_get_fb_vaddr(void);
+u32 blinkenlib_get_fb_width(void);
+u32 blinkenlib_get_fb_height(void);
+u32 blinkenlib_get_fb_stride(void);
+u32 blinkenlib_get_fb_generation(void);
+u8 *blinkenlib_get_fb_ptr(void);
+
 #endif /* BLINK_BLINKENLIB_H_ */
