@@ -340,7 +340,11 @@ void SetUp(void) {
   {
     extern int FLAG_strace;
     const char *st = getenv("BLINK_STRACE");
-    if (st && *st) FLAG_strace = atoi(st);
+    if (st && *st) {
+      extern void LogInit(const char *);
+      FLAG_strace = atoi(st);
+      LogInit("/em-strace.log");  // MEMFS: cross-thread coherent, host-readable
+    }
   }
 #endif
   InitMap();
