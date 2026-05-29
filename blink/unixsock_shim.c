@@ -210,10 +210,13 @@ int blink_unix_connect(int fd, const struct sockaddr *addr, socklen_t len) {
 
 int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len) {
   struct UnixSock *s = FindByFd(fd);
+  USDBG("accept(fd=%d) vmid=%d tracked=%d npending=%d", fd,
+        g_blink_unixsock_vmid, s ? 1 : 0, s ? s->npending : -1);
   if (!s) return accept(fd, addr, len);
   if (s->state != UNIX_LISTENING) { errno = EINVAL; return -1; }
   if (s->npending == 0) { errno = EAGAIN; return -1; }  // nonblocking: nothing yet
   int conn = s->pending[0];
+  USDBG("accept -> conn fd=%d", conn);
   for (int i = 1; i < s->npending; i++) s->pending[i - 1] = s->pending[i];
   s->pending[--s->npending] = -1;
   // Drain one readiness byte (written by connect) so the listener fd's poll
