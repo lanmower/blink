@@ -160,6 +160,11 @@ int blink_unix_listen(int fd, int backlog) {
   (void)backlog;
   if (!s->bound) { errno = EINVAL; return -1; }  // must bind() first
   s->state = UNIX_LISTENING;
+  {
+    int n = 0;
+    for (int i = 0; i < UNIX_MAX_SOCKS; i++) if (g_socks[i].state != UNIX_FREE) n++;
+    USDBG("listen OK vmid=%d total-live-entries=%d &g_socks=%p", g_blink_unixsock_vmid, n, (void*)g_socks);
+  }
   return 0;
 }
 
@@ -171,6 +176,9 @@ int blink_unix_connect(int fd, const struct sockaddr *addr, socklen_t len) {
   USDBG("connect path='%s'", key);
   struct UnixSock *l = FindListenerByPath(key);
   if (!l) {
+    int n = 0;
+    for (int i = 0; i < UNIX_MAX_SOCKS; i++) if (g_socks[i].state != UNIX_FREE) n++;
+    USDBG("connect-refused vmid=%d total-live-entries=%d &g_socks=%p", g_blink_unixsock_vmid, n, (void*)g_socks);
     // Dump the registry so we can see whether the server's listener is visible
     // here (shared g_socks across VMs) or not.
     for (int di = 0; di < UNIX_MAX_SOCKS; di++)
