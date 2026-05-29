@@ -165,6 +165,12 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents,
     if (pfds[k].revents & POLLRDHUP) ev |= EPOLLRDHUP;
     events[out].events = ev & (e->w[idx[k]].events | EPOLLERR | EPOLLHUP);
     events[out].data = e->w[idx[k]].data;
+    if (blink_unix_conn_readable(pfds[k].fd) >= 0) {
+      extern void blink_usmark(const char*); char b[96];
+      snprintf(b, sizeof(b), "epoll_wait RET fd=%d revents=0x%x out_events=0x%x watch=0x%x",
+               pfds[k].fd, (unsigned)pfds[k].revents, events[out].events,
+               e->w[idx[k]].events); blink_usmark(b);
+    }
     out++;
   }
   return out;
