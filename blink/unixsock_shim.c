@@ -456,6 +456,17 @@ int blink_unix_getsockname(int fd, struct sockaddr *addr, socklen_t *len) {
 
 // --- connected-pair readiness + data path ----------------------------------
 
+// FIONREAD for tracked connected endpoints: bytes are buffered in the shared
+// ring, not the backing pipe, so a host ioctl(FIONREAD) on the pipe reports 0.
+// Xtrans/dix use this to size reads and treat readable+0 as a hangup, closing
+// the client. Report the inbound ring's byte count. Returns 1 if handled.
+int blink_unix_fionread(int fd, int *out) {
+  struct UnixConnFd *c = FindConnFd(fd);
+  if (!c) return 0;
+  if (out) *out = (int)RingUsed(ConnInRing(c));
+  return 1;
+}
+
 int blink_unix_conn_readable(int fd) {
   struct UnixConnFd *c = FindConnFd(fd);
   if (!c) return -1;

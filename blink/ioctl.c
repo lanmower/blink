@@ -360,6 +360,21 @@ int SysIoctl(struct Machine *m, int fildes, u64 request, i64 addr) {
 #endif
 #ifdef FIONREAD
     case FIONREAD_LINUX:
+#ifdef __EMSCRIPTEN__
+      {
+        // In-process connected endpoints buffer bytes in a shared ring, not the
+        // backing pipe; report the ring count so dix doesn't see readable+0 and
+        // close the client.
+        extern int blink_unix_fionread(int, int *);
+        int navail;
+        if (blink_unix_fionread(fildes, &navail)) {
+          u8 *p;
+          if (!(p = (u8 *)SchlepW(m, addr, 4))) return -1;
+          Write32(p, navail);
+          return 0;
+        }
+      }
+#endif
       return IoctlGetInt32(m, fildes, FIONREAD, addr);
 #endif
 #ifdef TIOCOUTQ
