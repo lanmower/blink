@@ -735,6 +735,11 @@ static bool IsForkOrVfork(u64 flags) {
 
 static int SysClone(struct Machine *m, u64 flags, u64 stack, u64 ptid, u64 ctid,
                     u64 tls, u64 func) {
+#ifdef __EMSCRIPTEN__
+  if (getenv("BLINK_FORK_DEBUG"))
+    fprintf(stderr, "[forkexec] SysClone flags=0x%llx isfork=%d\n",
+            (unsigned long long)flags, (int)IsForkOrVfork(flags));
+#endif
   if (IsForkOrVfork(flags)) {
 #ifdef __EMSCRIPTEN__
     // musl's fork()/posix_spawn route through clone(); the in-VM synchronous
@@ -3712,6 +3717,9 @@ static int SysExecve(struct Machine *m, i64 pa, i64 aa, i64 ea) {
   if (!(argv = CopyStrList(m, aa))) return -1;
   if (!(envp = CopyStrList(m, ea))) return -1;
 #ifdef __EMSCRIPTEN__
+  if (getenv("BLINK_FORK_DEBUG"))
+    fprintf(stderr, "[forkexec] SysExecve %s (fork active=%d)\n", prog,
+            g_em_fork.active);
   // If we're in the child branch of an emscripten fork(), this execve replaces
   // the (virtual) child: run the target inline to completion sharing our fds,
   // record its status under a synthetic pid, then return to the parent's fork()
