@@ -542,13 +542,28 @@ ssize_t blink_unix_writev(int fd, const struct iovec *iov, int iovcnt) {
 
 ssize_t blink_unix_recvmsg(int fd, struct msghdr *msg, int flags) {
   struct UnixConnFd *c = FindConnFd(fd);
-  { char b[96]; snprintf(b, sizeof(b), "recvmsg ENTER fd=%d vmid=%d found=%d", fd, g_blink_unixsock_vmid, c?1:0); USMARK(b); }
   if (!c) return recvmsg(fd, msg, flags);
-  { static int rmc = 0; if (rmc < 12) { rmc++; char b[64];
-    snprintf(b, sizeof(b), "recvmsg fd=%d side=%d", fd, c->side); USMARK(b); } }
   (void)flags;
   ssize_t n = blink_unix_readv(fd, msg->msg_iov, (int)msg->msg_iovlen);
-  if (n >= 0) { msg->msg_controllen = 0; msg->msg_flags = 0; }
+  if (n < 0) return n;
+  // If the caller asked for ancillary data, synthesize SCM_CREDENTIALS for the
+  // peer: an in-process loopback peer is the same (root) principal, which is
+  // what dix needs to authorize a LocalClient. Without this dix cannot establish
+  // the connection's credentials and drops it right after accept.
+  msg->msg_flags = 0;
+  if (msg->msg_control &&
+      msg->msg_controllen >= CMSG_SPACE(sizeof(struct ucred))) {
+    struct cmsghdr *cm = CMSG_FIRSTHDR(msg);
+    cm->cmsg_level = SOL_SOCKET;
+    cm->cmsg_type = SCM_CREDENTIALS;
+    cm->cmsg_len = CMSG_LEN(sizeof(struct ucred));
+    struct ucred cr;
+    cr.pid = 1; cr.uid = 0; cr.gid = 0;
+    memcpy(CMSG_DATA(cm), &cr, sizeof(cr));
+    msg->msg_controllen = CMSG_SPACE(sizeof(struct ucred));
+  } else {
+    msg->msg_controllen = 0;
+  }
   return n;
 }
 
