@@ -329,6 +329,15 @@ void runLoop() {
 }
 
 void SetUp(void) {
+#ifdef __EMSCRIPTEN__
+  // Env-gated syscall trace: BLINK_STRACE=<n> raises FLAG_strace so the X-server
+  // diagnostic can see which syscall Xvfb loops on while it eats the heap.
+  {
+    extern int FLAG_strace;
+    const char *st = getenv("BLINK_STRACE");
+    if (st && *st) FLAG_strace = atoi(st);
+  }
+#endif
   InitMap();
   InitBus();
   s = NewSystem(XED_MACHINE_MODE_LONG);
