@@ -569,10 +569,8 @@ static int EmRunChildInline(struct Machine *parent, char *prog, char **argv,
     }
     UNLOCK(&parent->system->fds.lock);
   }
-  if (getenv("BLINK_FORK_DEBUG")) {
-    fprintf(stderr, "[forkexec] EmRunChildInline loading %s\n", prog);
-    fflush(stderr);
-  }
+  fprintf(stderr, "[forkexec] EmRunChildInline loading %s\n", prog);
+  fflush(stderr);
   saved_g = g_machine;
   g_machine = cm;
   status = -1;
@@ -740,11 +738,9 @@ static bool IsForkOrVfork(u64 flags) {
 static int SysClone(struct Machine *m, u64 flags, u64 stack, u64 ptid, u64 ctid,
                     u64 tls, u64 func) {
 #ifdef __EMSCRIPTEN__
-  if (getenv("BLINK_FORK_DEBUG")) {
-    fprintf(stderr, "[forkexec] SysClone flags=0x%llx isfork=%d\n",
-            (unsigned long long)flags, (int)IsForkOrVfork(flags));
-    fflush(stderr);
-  }
+  fprintf(stderr, "[forkexec] SysClone flags=0x%llx isfork=%d\n",
+          (unsigned long long)flags, (int)IsForkOrVfork(flags));
+  fflush(stderr);
 #endif
   if (IsForkOrVfork(flags)) {
 #ifdef __EMSCRIPTEN__
@@ -3723,20 +3719,18 @@ static int SysExecve(struct Machine *m, i64 pa, i64 aa, i64 ea) {
   if (!(argv = CopyStrList(m, aa))) return -1;
   if (!(envp = CopyStrList(m, ea))) return -1;
 #ifdef __EMSCRIPTEN__
-  if (getenv("BLINK_FORK_DEBUG")) {
-    fprintf(stderr, "[forkexec] SysExecve %s (fork active=%d)\n", prog,
-            g_em_fork.active);
-    fflush(stderr);
-  }
+  fprintf(stderr, "[forkexec] SysExecve %s (fork active=%d)\n", prog,
+          g_em_fork.active);
+  fflush(stderr);
   // If we're in the child branch of an emscripten fork(), this execve replaces
   // the (virtual) child: run the target inline to completion sharing our fds,
   // record its status under a synthetic pid, then return to the parent's fork()
   // with that pid via siglongjmp. The guest child branch never returns here.
   if (g_em_fork.active) {
     int status;
-    if (getenv("BLINK_FORK_DEBUG")) fprintf(stderr, "[forkexec] child execve %s\n", prog);
+    fprintf(stderr, "[forkexec] child execve %s\n", prog); fflush(stderr);
     status = EmRunChildInline(m, prog, argv, envp);
-    if (getenv("BLINK_FORK_DEBUG")) fprintf(stderr, "[forkexec] child %s exited status=0x%x\n", prog, status);
+    fprintf(stderr, "[forkexec] child %s exited status=0x%x\n", prog, status); fflush(stderr);
     g_em_fork.child_pid = EmRecordChild(status < 0 ? (127 << 8) : status);
     siglongjmp(g_em_fork.jb, 1);  // resume SysFork in the parent context
   }
