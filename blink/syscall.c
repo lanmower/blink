@@ -480,8 +480,145 @@ static int Fork(struct Machine *m, u64 flags, u64 stack, u64 ctid) {
   return pid;
 }
 
+#ifdef __EMSCRIPTEN__
+// In-process synchronous fork+exec for the single-process wasm build, where
+// host fork() is unavailable. We model the fork()->[child]execve()->_exit /
+// [parent]waitpid() idiom (this is what Xorg's Popen uses to run xkbcomp, and
+// what a desktop uses to launch X clients). xkbcomp + X clients have been
+// proven to run standalone under blink, so the child only needs to be run
+// in-VM to completion with the parent's fds (so an inherited pipe works).
+//
+// Mechanism: SysFork snapshots the parent register file + a sigsetjmp and
+// returns 0, so the guest takes the CHILD branch and reaches execve(). The
+// emscripten SysExecve then loads+runs the target program in a fresh Machine
+// that shares the parent's open fds, to exit, records the child status, then
+// restores the parent's register snapshot and siglongjmps back into SysFork,
+// which returns the child pid so the guest's PARENT branch runs. SysWait4
+// returns the recorded status. Single child in flight at a time (the idiom is
+// synchronous), tracked in a small ring keyed by synthetic pid.
+
+struct EmChild {
+  int pid;       // synthetic child pid (0 = free slot)
+  int status;    // raw wait status (exitcode << 8)
+  bool reaped;
+};
+#define EM_MAX_CHILDREN 32
+static struct EmChild g_em_children[EM_MAX_CHILDREN];
+static int g_em_next_pid = 0x40000;  // synthetic pids, distinct from real ones
+
+// Re-entry state for the in-flight vfork-style child.
+struct EmForkCtx {
+  sigjmp_buf jb;        // SysFork sets this; SysExecve longjmps back to it
+  u8 beg[128];          // parent general register file snapshot
+  u64 ip;               // parent instruction pointer (after the fork syscall)
+  u32 flags;            // parent eflags
+  int child_pid;        // pid handed to the parent
+  bool active;          // a fork child is mid-flight (awaiting its execve)
+};
+static struct EmForkCtx g_em_fork;  // one synchronous child at a time
+
+extern struct System *NewSystem(struct XedMachineMode);
+extern struct Machine *NewMachine(struct System *, struct Machine *);
+extern void FreeMachine(struct Machine *);
+extern void FreeSystem(struct System *);
+extern void LoadProgram(struct Machine *, char *, char *, char **, char **,
+                        const char *);
+extern void Actor(struct Machine *);
+
+static int EmRecordChild(int status) {
+  int i, pid = ++g_em_next_pid;
+  for (i = 0; i < EM_MAX_CHILDREN; ++i) {
+    if (!g_em_children[i].pid) {
+      g_em_children[i].pid = pid;
+      g_em_children[i].status = status;
+      g_em_children[i].reaped = false;
+      return pid;
+    }
+  }
+  // table full: overwrite slot 0 (statuses are short-lived, reaped at once)
+  g_em_children[0].pid = pid;
+  g_em_children[0].status = status;
+  g_em_children[0].reaped = false;
+  return pid;
+}
+
+// Run `prog` (argv/envp) to completion in a fresh Machine that shares this
+// machine's open host fds, returning the child's exit status (exitcode<<8) or
+// -1 on a load failure.
+static int EmRunChildInline(struct Machine *parent, char *prog, char **argv,
+                            char **envp) {
+  struct System *cs;
+  struct Machine *cm, *saved_g;
+  int rc, status;
+  extern struct Machine *g_machine;
+  cs = NewSystem(parent->mode);
+  if (!cs) return -1;
+  cm = NewMachine(cs, 0);
+  if (!cm) { FreeSystem(cs); return -1; }
+  cm->metal = false;
+  cs->trapexit = true;       // guest _exit traps to our sigsetjmp, not _Exit()
+  // Inherit the parent's open fds so an inherited pipe (Popen) works. The host
+  // fd integers are process-global, so registering the same numbers in the
+  // child's fd table suffices for read()/write()/close() to reach them.
+  {
+    struct Dll *e;
+    LOCK(&parent->system->fds.lock);
+    for (e = dll_first(parent->system->fds.list); e;
+         e = dll_next(parent->system->fds.list, e)) {
+      int pfildes = FD_CONTAINER(e)->fildes;
+      if (pfildes >= 0) AddStdFd(&cs->fds, pfildes);
+    }
+    UNLOCK(&parent->system->fds.lock);
+  }
+  saved_g = g_machine;
+  g_machine = cm;
+  status = -1;
+  if (!(rc = sigsetjmp(cm->onhalt, 1))) {
+    cm->canhalt = true;
+    LoadProgram(cm, prog, prog, argv, envp, 0);
+    Actor(cm);  // runs until the child halts (traps to onhalt) — never returns
+  } else {
+    // child halted; trapexit stored the code in cs->exited/exitcode
+    status = (cs->exited ? cs->exitcode : 0) << 8;
+  }
+  g_machine = saved_g;
+  cm->canhalt = false;
+  FreeMachine(cm);
+  return status;
+}
+#endif /* __EMSCRIPTEN__ */
+
 static int SysFork(struct Machine *m) {
+#ifdef __EMSCRIPTEN__
+  // Snapshot the parent and return 0 so the guest runs the child branch; the
+  // child's execve will run inline and longjmp back here (rc != 0) to give the
+  // parent the child pid. If the guest forks without exec'ing (rare here),
+  // there is no second control flow — we fall through returning 0 once, which
+  // matches a child that simply runs the post-fork code in-line; for the X
+  // server / Popen case the child always execs immediately.
+  if (!g_em_fork.active) {
+    int rc = sigsetjmp(g_em_fork.jb, 1);
+    if (rc == 0) {
+      memcpy(g_em_fork.beg, m->beg, sizeof(g_em_fork.beg));
+      g_em_fork.ip = m->ip;
+      g_em_fork.flags = m->flags;
+      g_em_fork.active = true;
+      return 0;  // guest enters the child branch
+    } else {
+      // returned from the child's execve via siglongjmp; restore parent regs
+      memcpy(m->beg, g_em_fork.beg, sizeof(m->beg));
+      m->ip = g_em_fork.ip;
+      m->flags = g_em_fork.flags;
+      g_em_fork.active = false;
+      return g_em_fork.child_pid;  // parent sees the child pid
+    }
+  }
+  // Nested fork while a child is mid-flight: not supported; report failure.
+  errno = EAGAIN;
+  return -1;
+#else
   return Fork(m, 0, 0, 0);
+#endif
 }
 
 static int SysVfork(struct Machine *m) {
@@ -3570,6 +3707,17 @@ static int SysExecve(struct Machine *m, i64 pa, i64 aa, i64 ea) {
   if (!(prog = CopyStr(m, pa))) return -1;
   if (!(argv = CopyStrList(m, aa))) return -1;
   if (!(envp = CopyStrList(m, ea))) return -1;
+#ifdef __EMSCRIPTEN__
+  // If we're in the child branch of an emscripten fork(), this execve replaces
+  // the (virtual) child: run the target inline to completion sharing our fds,
+  // record its status under a synthetic pid, then return to the parent's fork()
+  // with that pid via siglongjmp. The guest child branch never returns here.
+  if (g_em_fork.active) {
+    int status = EmRunChildInline(m, prog, argv, envp);
+    g_em_fork.child_pid = EmRecordChild(status < 0 ? (127 << 8) : status);
+    siglongjmp(g_em_fork.jb, 1);  // resume SysFork in the parent context
+  }
+#endif
   LOCK(&m->system->exec_lock);
   ExecveBlink(m, prog, argv, envp);
   SYS_LOGF("execve(%s)", prog);
@@ -3593,6 +3741,35 @@ static int SysWait4(struct Machine *m, int pid, i64 opt_out_wstatus_addr,
        !IsValidMemory(m, opt_out_rusage_addr, sizeof(grusage), PROT_WRITE))) {
     return -1;
   }
+#ifdef __EMSCRIPTEN__
+  // Reap a synthetic in-VM fork child (its status was recorded synchronously
+  // when its execve ran). Match a specific pid or any (-1/0).
+  {
+    int i;
+    for (i = 0; i < EM_MAX_CHILDREN; ++i) {
+      struct EmChild *c = &g_em_children[i];
+      if (c->pid && !c->reaped && (pid <= 0 || pid == c->pid)) {
+        int reaped_pid = c->pid;
+        c->reaped = true;
+        if (opt_out_wstatus_addr) {
+          u8 wsb[4];
+          Write32(wsb, c->status);
+          if (CopyToUserWrite(m, opt_out_wstatus_addr, wsb, sizeof(wsb)) == -1)
+            return -1;
+        }
+        if (opt_out_rusage_addr) {
+          memset(&grusage, 0, sizeof(grusage));
+          CopyToUserWrite(m, opt_out_rusage_addr, &grusage, sizeof(grusage));
+        }
+        c->pid = 0;  // free the slot
+        return reaped_pid;
+      }
+    }
+    // No synthetic child pending; emscripten has no real children to wait on.
+    errno = ECHILD;
+    return -1;
+  }
+#endif
 #ifdef HAVE_WAIT4
   RESTARTABLE(rc = wait4(pid, &wstatus, options, &hrusage));
 #else
