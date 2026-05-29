@@ -110,8 +110,32 @@ static struct UnixSock *FindListenerByPath(const char *path) {
 int blink_unix_listener_readable(int fd) {
   for (int i = 0; i < UNIX_MAX_SOCKS; i++)
     if (g_socks[i].state == UNIX_LISTENING && g_socks[i].fd == fd &&
-        g_socks[i].vmid == g_blink_unixsock_vmid)
+        g_socks[i].vmid == g_blink_unixsock_vmid) {
+      if (g_socks[i].npending > 0) {
+        char b[120];
+        snprintf(b, sizeof(b), "listener_readable HIT fd=%d vmid=%d npending=%d",
+                 fd, g_blink_unixsock_vmid, g_socks[i].npending);
+        USMARK(b);
+      }
       return g_socks[i].npending > 0 ? 1 : 0;
+    }
+  // Not matched as a listener in THIS vm. Log once-ish what listeners exist so we
+  // can tell whether the poll fd, the vmid, or the registry visibility is wrong.
+  {
+    static int dumped = 0;
+    if (!dumped) {
+      dumped = 1;
+      char b[160];
+      for (int i = 0; i < UNIX_MAX_SOCKS; i++)
+        if (g_socks[i].state == UNIX_LISTENING) {
+          snprintf(b, sizeof(b),
+                   "listener_readable MISS qfd=%d qvmid=%d | LISTENER fd=%d vmid=%d path=%s npending=%d",
+                   fd, g_blink_unixsock_vmid, g_socks[i].fd, g_socks[i].vmid,
+                   g_socks[i].path, g_socks[i].npending);
+          USMARK(b);
+        }
+    }
+  }
   return -1;
 }
 
