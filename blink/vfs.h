@@ -466,6 +466,7 @@ ssize_t VfsPathBuild(struct VfsInfo *, struct VfsInfo *, bool,
 #undef VfsSetsockopt
 #undef VfsGetsockopt
 #undef VfsGetsockname
+#undef VfsGetpeername
 #define VfsSocket      blink_unix_socket
 #define VfsBind        blink_unix_bind
 #define VfsConnect     blink_unix_connect
@@ -475,6 +476,7 @@ ssize_t VfsPathBuild(struct VfsInfo *, struct VfsInfo *, bool,
 #define VfsSetsockopt  blink_unix_setsockopt
 #define VfsGetsockopt  blink_unix_getsockopt
 #define VfsGetsockname blink_unix_getsockname
+#define VfsGetpeername blink_unix_getpeername
 // Data path: connected in-process pairs carry bytes through shared rings
 // (socketpair is unsupported on the emscripten host). These wrappers fall
 // through to libc for any untracked fd, so normal files/pipes are unchanged.

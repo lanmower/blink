@@ -406,13 +406,13 @@ int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len) {
 // tracked fds these are no-ops / synthesized; untracked fds fall through.
 int blink_unix_setsockopt(int fd, int level, int optname, const void *optval,
                           socklen_t optlen) {
-  if (FindByFd(fd)) { USDBG("setsockopt(fd=%d lvl=%d opt=%d) noop", fd, level, optname); return 0; }
+  if (FindByFd(fd) || FindConnFd(fd)) { USDBG("setsockopt(fd=%d lvl=%d opt=%d) noop", fd, level, optname); return 0; }
   return setsockopt(fd, level, optname, optval, optlen);
 }
 
 int blink_unix_getsockopt(int fd, int level, int optname, void *optval,
                           socklen_t *optlen) {
-  if (FindByFd(fd)) {
+  if (FindByFd(fd) || FindConnFd(fd)) {
     // SO_ERROR (and friends) -> 0; report a 4-byte zero where there's room.
     if (optval && optlen && *optlen >= (socklen_t)sizeof(int)) {
       *(int *)optval = 0;
@@ -428,7 +428,15 @@ int blink_unix_getsockopt(int fd, int level, int optname, void *optval,
 
 int blink_unix_getsockname(int fd, struct sockaddr *addr, socklen_t *len) {
   struct UnixSock *s = FindByFd(fd);
-  if (!s) return getsockname(fd, addr, len);
+  struct UnixConnFd *c = s ? 0 : FindConnFd(fd);
+  if (!s && !c) return getsockname(fd, addr, len);
+  if (c) {  // connected endpoint: report a unix family with an empty path
+    if (addr && len && *len >= (socklen_t)sizeof(sa_family_t)) {
+      addr->sa_family = AF_UNIX;
+      *len = sizeof(sa_family_t);
+    }
+    return 0;
+  }
   if (addr && len) {
     struct sockaddr_un un;
     memset(&un, 0, sizeof(un));
@@ -544,6 +552,19 @@ int blink_unix_poll(struct pollfd *fds, unsigned long nfds, int timeout) {
     }
   }
   return rc;
+}
+
+int blink_unix_getpeername(int fd, struct sockaddr *addr, socklen_t *len) {
+  if (FindByFd(fd) || FindConnFd(fd)) {
+    // In-process unix peer: report AF_UNIX with an empty path. Xtrans uses this
+    // only for local access control, which our loopback layer always permits.
+    if (addr && len && *len >= (socklen_t)sizeof(sa_family_t)) {
+      addr->sa_family = AF_UNIX;
+      *len = sizeof(sa_family_t);
+    }
+    return 0;
+  }
+  return getpeername(fd, addr, len);
 }
 
 int blink_unix_close(int fd) {
