@@ -121,8 +121,13 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents,
   // pending, synthesize POLLIN without blocking. Also CAP the poll timeout so we
   // re-check shared listener state periodically rather than block forever on a
   // pipe that won't signal cross-thread.
-  for (int k = 0; k < n; k++)
+  for (int k = 0; k < n; k++) {
     if (blink_unix_listener_readable(pfds[k].fd) == 1) pfds[k].revents |= POLLIN;
+    // Connected in-process endpoints carry data in shared rings, invisible to
+    // the host pipe poll; surface ring readiness here too so the X server wakes
+    // to read its clients.
+    if (blink_unix_conn_readable(pfds[k].fd) == 1) pfds[k].revents |= POLLIN;
+  }
   int presynth = 0;
   for (int k = 0; k < n; k++) if (pfds[k].revents) presynth = 1;
   int rc;
@@ -132,7 +137,8 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents,
     int to = timeout; if (to < 0 || to > 20) to = 20;  // cap so we recheck npending
     rc = poll(pfds, n, to);
     for (int k = 0; k < n; k++)
-      if (blink_unix_listener_readable(pfds[k].fd) == 1) {
+      if (blink_unix_listener_readable(pfds[k].fd) == 1 ||
+          blink_unix_conn_readable(pfds[k].fd) == 1) {
         if (!pfds[k].revents) rc++;
         pfds[k].revents |= POLLIN;
       }
