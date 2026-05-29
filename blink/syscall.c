@@ -2184,6 +2184,10 @@ static i64 SysSendmsg(struct Machine *m, i32 fildes, i64 msgaddr, i32 flags) {
 }
 
 static i64 SysRecvmsg(struct Machine *m, i32 fildes, i64 msgaddr, i32 flags) {
+#ifdef __EMSCRIPTEN__
+  if (fildes >= 9) { extern void blink_usmark(const char*); char b[48];
+    snprintf(b, sizeof(b), "SYS recvmsg(%d)", fildes); blink_usmark(b); }
+#endif
   ssize_t rc;
   u64 iovlen;
   i64 iovaddr;
@@ -2517,6 +2521,10 @@ static i64 SysRead(struct Machine *m, i32 fildes, i64 addr, u64 size) {
   i64 rc;
   int oflags;
   struct Fd *fd;
+#ifdef __EMSCRIPTEN__
+  if (fildes >= 9) { extern void blink_usmark(const char*); char b[48];
+    snprintf(b, sizeof(b), "SYS read(%d) sz=%llu", fildes, (unsigned long long)size); blink_usmark(b); }
+#endif
   struct Iovs iv;
   ssize_t (*readv_impl)(int, const struct iovec *, int);
   if (size > NUMERIC_MAX(size_t)) return eoverflow();
@@ -2742,6 +2750,10 @@ static i64 SysPwritev2(struct Machine *m, i32 fildes, i64 iovaddr, u32 iovlen,
 }
 
 static i64 SysReadv(struct Machine *m, i32 fildes, i64 iovaddr, u32 iovlen) {
+#ifdef __EMSCRIPTEN__
+  if (fildes >= 9) { extern void blink_usmark(const char*); char b[48];
+    snprintf(b, sizeof(b), "SYS readv(%d)", fildes); blink_usmark(b); }
+#endif
   return SysPreadv2(m, fildes, iovaddr, iovlen, -1, 0);
 }
 
