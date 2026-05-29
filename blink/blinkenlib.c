@@ -86,8 +86,12 @@ char argv_string[ARGV_MAX_LINE_LEN] = {0};
 char progname_string[PROGNAME_MAX_LINE_LEN] = {0};
 
 struct clstruct cls;
-struct System *s;
-struct Machine *m;
+// Thread-local so each VM thread (X server on one pthread, X client on another)
+// has its own current (m,s) — Actor() sets the global `m`, and the main thread's
+// vm_spawn/SetUp also touches them, so without per-thread storage the two VM
+// threads would clobber each other's machine pointers (server corruption).
+_Thread_local struct System *s;
+_Thread_local struct Machine *m;
 
 /*
  * Framebuffer registration published by the guest.
