@@ -597,7 +597,8 @@ static int SysFork(struct Machine *m) {
   // there is no second control flow — we fall through returning 0 once, which
   // matches a child that simply runs the post-fork code in-line; for the X
   // server / Popen case the child always execs immediately.
-  if (getenv("BLINK_FORK_DEBUG")) { fprintf(stderr, "[forkexec] SysFork active=%d\n", g_em_fork.active); fflush(stderr); }
+  { FILE *mk = fopen("/tmp/blink-fork-fired", "a");
+    if (mk) { fprintf(mk, "SysFork active=%d\n", g_em_fork.active); fclose(mk); } }
   if (!g_em_fork.active) {
     int rc = sigsetjmp(g_em_fork.jb, 1);
     if (rc == 0) {
