@@ -64,7 +64,11 @@ static struct UnixSock g_socks[UNIX_MAX_SOCKS];
 // close() is VM-scoped: a close in VM-B must not free VM-A's socket entry even
 // if the guest fd numbers collide across the two VMs' fd spaces. Listener LOOKUP
 // stays global so a client VM can find the server VM's listener by path.
-int g_blink_unixsock_vmid = 0;
+// Thread-local: each VM thread (server/client) has its own current vmid, so the
+// listener-readable + close VM-scoping checks use THIS thread's VM, not whichever
+// VM the main thread spawned last (a shared global got clobbered to the client's
+// vmid, breaking the server thread's listener-readiness match).
+_Thread_local int g_blink_unixsock_vmid = 0;
 
 // Match by (vmid, fd): guest fd numbers can collide across concurrent VMs, so a
 // socket op must only see the CURRENT VM's own entry.

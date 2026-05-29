@@ -467,7 +467,7 @@ struct EmVm { struct Machine *m; struct System *s; int vmid; };
 // Set by the in-process unix-socket shim's compilation unit; we tag each VM so a
 // close() in one VM does not free another VM's socket entry (guest fd numbers
 // collide across concurrent VMs). See blink/unixsock_shim.c.
-extern int g_blink_unixsock_vmid;
+extern _Thread_local int g_blink_unixsock_vmid;
 static int g_em_next_vmid = 0;
 
 EMSCRIPTEN_KEEPALIVE
@@ -517,7 +517,7 @@ void *blinkenlib_vm_spawn(int withdebugger) {
 // read; trapexit makes the guest exit longjmp to this thread's sigsetjmp instead
 // of _exit()ing the whole process.
 extern void Actor(struct Machine *);
-struct EmThreadArg { struct Machine *m; struct System *s; int slot; };
+struct EmThreadArg { struct Machine *m; struct System *s; int slot; int vmid; };
 volatile int g_em_thread_status[8];   // by slot
 volatile int g_em_thread_done[8];
 
