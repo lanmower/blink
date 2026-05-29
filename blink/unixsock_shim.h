@@ -52,6 +52,7 @@ int blink_unix_getsockopt(int fd, int level, int optname, void *optval,
                           socklen_t *optlen);
 int blink_unix_getsockname(int fd, struct sockaddr *addr, socklen_t *len);
 int blink_unix_getpeername(int fd, struct sockaddr *addr, socklen_t *len);
+int blink_unix_shutdown(int fd, int how);
 
 #endif /* __EMSCRIPTEN__ */
 #endif /* BLINK_UNIXSOCK_SHIM_H_ */

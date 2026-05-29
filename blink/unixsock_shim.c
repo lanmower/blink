@@ -601,6 +601,19 @@ int blink_unix_poll(struct pollfd *fds, unsigned long nfds, int timeout) {
   return rc;
 }
 
+int blink_unix_shutdown(int fd, int how) {
+  struct UnixConnFd *c = FindConnFd(fd);
+  if (c) {
+    // Half/full close of an in-process pair: mark this side closed so the peer
+    // reads EOF. Data already buffered in the rings stays readable.
+    (void)how;
+    if (c->side == 0) c->conn->a_open = 0; else c->conn->b_open = 0;
+    return 0;
+  }
+  if (FindByFd(fd)) return 0;  // listener: no-op success
+  return shutdown(fd, how);
+}
+
 int blink_unix_getpeername(int fd, struct sockaddr *addr, socklen_t *len) {
   struct UnixConnFd *c = FindConnFd(fd);
   if (c) return FillUnixAddr(c->path, addr, len);
