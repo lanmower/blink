@@ -533,6 +533,10 @@ static void *EmVmThread(void *argp) {
   // helpers + the trapexit/clstruct paths operate on THIS VM (they were NULL on
   // a freshly-created pthread, which crashed the guest before it could connect).
   m = cm; s = cs;
+  // Marker in shared MEMFS (cross-thread coherent, unlike the stdout callbacks)
+  // so the host can confirm THIS thread actually started running its guest.
+  { char p[32]; snprintf(p, sizeof(p), "/em-thr-%d.run", slot);
+    FILE *mk = fopen(p, "w"); if (mk) { fputs("started\n", mk); fclose(mk); } }
   cm->thread = pthread_self();
   cs->trapexit = true;
   if (!(rc = sigsetjmp(cm->onhalt, 1))) {
