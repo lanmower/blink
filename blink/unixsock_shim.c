@@ -518,7 +518,10 @@ ssize_t blink_unix_readv(int fd, const struct iovec *iov, int iovcnt) {
     total += (ssize_t)got;
     if (got < iov[i].iov_len) break;
   }
-  { char b[80]; snprintf(b, sizeof(b), "readv fd=%d side=%d got=%zd", fd, c->side, total); USMARK(b); }
+  { char b[120];
+    const unsigned char *d0 = (const unsigned char *)iov[0].iov_base;
+    snprintf(b, sizeof(b), "readv fd=%d side=%d got=%zd bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+             fd, c->side, total, d0[0],d0[1],d0[2],d0[3],d0[4],d0[5],d0[6],d0[7],d0[8],d0[9],d0[10],d0[11]); USMARK(b); }
   return total;
 }
 
