@@ -330,12 +330,12 @@ void runLoop() {
 
 void SetUp(void) {
 #ifdef __EMSCRIPTEN__
-  // Env-gated syscall trace: BLINK_STRACE=<n> raises FLAG_strace so the X-server
-  // diagnostic can see which syscall Xvfb loops on while it eats the heap.
+  // TEMP DIAGNOSTIC: force syscall trace on (emscripten getenv does not see the
+  // host env reliably) so the X-server smoke shows which syscall Xvfb loops on
+  // while it eats the heap. Revert once the loop is identified.
   {
     extern int FLAG_strace;
-    const char *st = getenv("BLINK_STRACE");
-    if (st && *st) FLAG_strace = atoi(st);
+    FLAG_strace = 1;
   }
 #endif
   InitMap();
