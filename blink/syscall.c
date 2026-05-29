@@ -2534,30 +2534,6 @@ static int SysGetsockopt(struct Machine *m, i32 fildes, i32 level, i32 optname,
                                  optvalsizeaddr, XlatErrno);
         case SO_LINGER_LINUX:
           return GetsockoptLinger(m, fildes, optvaladdr, optvalsizeaddr);
-#ifdef __EMSCRIPTEN__
-        case 17: {  // SO_PEERCRED (Linux): report the in-process peer's ucred so
-                    // dix can authorize the local X client. Layout: 3x int32
-                    // {pid,uid,gid}. Only meaningful for our tracked unix fds.
-          extern int blink_unix_is_tracked(int);
-          if (blink_unix_is_tracked(fildes)) {
-            u8 cred[12]; u32 sz;
-            Write32(cred + 0, 1);  // pid
-            Write32(cred + 4, 0);  // uid (root)
-            Write32(cred + 8, 0);  // gid
-            if (CopyFromUserRead(m, optvalsize_linux, optvalsizeaddr,
-                                 sizeof(optvalsize_linux)) == -1)
-              return -1;
-            sz = Read32(optvalsize_linux);
-            if (sz > sizeof(cred)) sz = sizeof(cred);
-            CopyToUserWrite(m, optvaladdr, cred, sz);
-            Write32(optvalsize_linux, sz);
-            CopyToUserWrite(m, optvalsizeaddr, optvalsize_linux,
-                            sizeof(optvalsize_linux));
-            return 0;
-          }
-          break;
-        }
-#endif
         default:
           break;
       }
