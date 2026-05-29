@@ -40,6 +40,7 @@ struct UnixSock {
                                // makes `fd` (the read end) poll-readable so the
                                // X server's epoll loop wakes to accept().
   enum UnixState state;
+  int bound;                   // bind() has been called on this fd
   char path[UNIX_PATH_MAX];    // bind path (listeners) — empty otherwise
   int pending[UNIX_MAX_BACKLOG];  // queued server-side fds awaiting accept()
   int npending;
@@ -91,11 +92,34 @@ int blink_unix_socket(int domain, int type, int protocol) {
   return pp[0];
 }
 
-static const char *UnixPath(const struct sockaddr *addr, socklen_t len) {
-  if (!addr || addr->sa_family != AF_UNIX) return 0;
+// Build a stable string key for a unix address into `out` (size UNIX_PATH_MAX).
+// Handles both filesystem paths (NUL-terminated sun_path) and Linux abstract
+// sockets (sun_path[0] == '\0', name in the bytes that follow up to addrlen).
+// Returns 0 on success, -1 on a malformed address.
+static int UnixKey(const struct sockaddr *addr, socklen_t len, char *out) {
+  if (!addr || addr->sa_family != AF_UNIX) return -1;
   const struct sockaddr_un *un = (const struct sockaddr_un *)addr;
-  (void)len;
-  return un->sun_path;  // NUL-terminated for normal (non-abstract) unix paths
+  size_t base = offsetof(struct sockaddr_un, sun_path);
+  if (len < (socklen_t)base) return -1;
+  size_t plen = (size_t)len - base;
+  if (plen == 0) {  // unnamed
+    out[0] = 0;
+    return 0;
+  }
+  if (un->sun_path[0] == '\0') {
+    // Abstract: prefix '@' then the raw bytes after the leading NUL.
+    size_t n = plen - 1;
+    if (n > UNIX_PATH_MAX - 2) n = UNIX_PATH_MAX - 2;
+    out[0] = '@';
+    memcpy(out + 1, un->sun_path + 1, n);
+    out[1 + n] = 0;
+  } else {
+    size_t n = strnlen(un->sun_path, plen);
+    if (n > UNIX_PATH_MAX - 1) n = UNIX_PATH_MAX - 1;
+    memcpy(out, un->sun_path, n);
+    out[n] = 0;
+  }
+  return 0;
 }
 
 int blink_unix_bind(int fd, const struct sockaddr *addr, socklen_t len) {
@@ -103,12 +127,13 @@ int blink_unix_bind(int fd, const struct sockaddr *addr, socklen_t len) {
   USDBG("bind(fd=%d) tracked=%d fam=%d", fd, s ? 1 : 0,
         addr ? addr->sa_family : -1);
   if (!s) return bind(fd, addr, len);  // not ours -> libc
-  const char *path = UnixPath(addr, len);
-  if (!path) { errno = EINVAL; return -1; }
-  USDBG("bind path='%s'", path);
-  if (FindListenerByPath(path)) { errno = EADDRINUSE; return -1; }
-  strncpy(s->path, path, UNIX_PATH_MAX - 1);
+  char key[UNIX_PATH_MAX];
+  if (UnixKey(addr, len, key) != 0) { errno = EINVAL; return -1; }
+  USDBG("bind path='%s'", key);
+  if (key[0] && FindListenerByPath(key)) { errno = EADDRINUSE; return -1; }
+  strncpy(s->path, key, UNIX_PATH_MAX - 1);
   s->path[UNIX_PATH_MAX - 1] = 0;
+  s->bound = 1;
   return 0;
 }
 
@@ -118,7 +143,7 @@ int blink_unix_listen(int fd, int backlog) {
         s ? s->path : "(none)");
   if (!s) return listen(fd, backlog);
   (void)backlog;
-  if (!s->path[0]) { errno = EINVAL; return -1; }  // must bind() first
+  if (!s->bound) { errno = EINVAL; return -1; }  // must bind() first
   s->state = UNIX_LISTENING;
   return 0;
 }
@@ -126,9 +151,10 @@ int blink_unix_listen(int fd, int backlog) {
 int blink_unix_connect(int fd, const struct sockaddr *addr, socklen_t len) {
   struct UnixSock *s = FindByFd(fd);
   if (!s) return connect(fd, addr, len);
-  const char *path = UnixPath(addr, len);
-  if (!path) { errno = EINVAL; return -1; }
-  struct UnixSock *l = FindListenerByPath(path);
+  char key[UNIX_PATH_MAX];
+  if (UnixKey(addr, len, key) != 0) { errno = EINVAL; return -1; }
+  USDBG("connect path='%s'", key);
+  struct UnixSock *l = FindListenerByPath(key);
   if (!l) { errno = ECONNREFUSED; return -1; }
   if (l->npending >= UNIX_MAX_BACKLOG) { errno = EAGAIN; return -1; }
   // Real bidirectional data channel between client and server.
