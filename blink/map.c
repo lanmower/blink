@@ -25,6 +25,10 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/heap.h>
+#endif
+
 #include "blink/assert.h"
 #include "blink/bitscan.h"
 #include "blink/bus.h"
@@ -172,6 +176,25 @@ void *Mmap(void *addr,     //
 #if defined(__NetBSD__)
   if (!(flags & MAP_SHARED)) {
     prot |= PROT_MPROTECT(PROT_EXEC | PROT_WRITE | PROT_READ);
+  }
+#endif
+#ifdef __EMSCRIPTEN__
+  // Under wasm the whole address space is one growable linear memory; when a
+  // request would push the heap past its maximum, emscripten's resize_heap
+  // ABORTS the runtime ("Cannot enlarge memory", exit 250) instead of returning
+  // MAP_FAILED, so blink's graceful ENOMEM fallback never runs and large guest
+  // mmaps (e.g. Xorg/Xvfb's arena) kill the whole VM. Pre-check the headroom and
+  // return ENOMEM ourselves so the caller (ReserveVirtual) degrades gracefully
+  // and the guest allocator (musl) retries with a smaller arena.
+  {
+    size_t cur = emscripten_get_heap_size();
+    size_t max = emscripten_get_heap_max();
+    // leave a margin for emscripten/runtime bookkeeping during the grow.
+    size_t margin = (size_t)64 * 1024 * 1024;
+    if (length > max || cur + length + margin > max) {
+      errno = ENOMEM;
+      return MAP_FAILED;
+    }
   }
 #endif
   res = PortableMmap(addr, length, prot, flags, fd, offset);
