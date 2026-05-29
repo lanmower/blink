@@ -63,6 +63,9 @@ int switches_count = 0;
  */
 void (*signal_callback)(int, int) = 0;
 void (*exit_callback)(int) = 0;
+// Set on worker VM threads so TerminateSignal/exit paths don't call the
+// main-thread JS callbacks via call_indirect (which traps off-main-thread).
+_Thread_local int g_em_on_worker = 0;
 
 /*
  * this buffer holds the disassembly strings
@@ -146,7 +149,12 @@ void TerminateSignal(struct Machine *m, int sig, int code) {
   }
 #endif
   update_clstruct(m);
-  if (signal_callback) {
+  // On a worker VM thread (concurrent X server/client), the JS signal/exit
+  // callbacks are main-thread function-table entries; calling them via
+  // call_indirect from a worker traps ("table index out of bounds"). Worker VMs
+  // report status through g_em_thread_* flags instead, so suppress the callback.
+  extern _Thread_local int g_em_on_worker;
+  if (signal_callback && !g_em_on_worker) {
     signal_callback(sig, code);
   }
 }
@@ -546,6 +554,7 @@ static void *EmVmThread(void *argp) {
   // and close VM-scoping checks must use THIS thread's VM, not whatever vmid the
   // main thread left in the (now thread-local) global after spawning.
   g_blink_unixsock_vmid = cvmid;
+  g_em_on_worker = 1;  // suppress main-thread JS callbacks from this thread
   // Marker in shared MEMFS (cross-thread coherent, unlike the stdout callbacks)
   // so the host can confirm THIS thread actually started running its guest.
   { char p[32]; snprintf(p, sizeof(p), "/em-thr-%d.run", slot);
