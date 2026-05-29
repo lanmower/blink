@@ -556,24 +556,11 @@ ssize_t blink_unix_recvmsg(int fd, struct msghdr *msg, int flags) {
   (void)flags;
   ssize_t n = blink_unix_readv(fd, msg->msg_iov, (int)msg->msg_iovlen);
   if (n < 0) return n;
-  // If the caller asked for ancillary data, synthesize SCM_CREDENTIALS for the
-  // peer: an in-process loopback peer is the same (root) principal, which is
-  // what dix needs to authorize a LocalClient. Without this dix cannot establish
-  // the connection's credentials and drops it right after accept.
+  // No ancillary data: the in-process pair passes no fds (SCM_RIGHTS) and dix
+  // gets peer credentials via SO_PEERCRED, not via the data recvmsg. Returning
+  // unexpected ancillary here made dix drop the client after the first read.
+  msg->msg_controllen = 0;
   msg->msg_flags = 0;
-  if (msg->msg_control &&
-      msg->msg_controllen >= CMSG_SPACE(sizeof(struct ucred))) {
-    struct cmsghdr *cm = CMSG_FIRSTHDR(msg);
-    cm->cmsg_level = SOL_SOCKET;
-    cm->cmsg_type = SCM_CREDENTIALS;
-    cm->cmsg_len = CMSG_LEN(sizeof(struct ucred));
-    struct ucred cr;
-    cr.pid = 1; cr.uid = 0; cr.gid = 0;
-    memcpy(CMSG_DATA(cm), &cr, sizeof(cr));
-    msg->msg_controllen = CMSG_SPACE(sizeof(struct ucred));
-  } else {
-    msg->msg_controllen = 0;
-  }
   return n;
 }
 
