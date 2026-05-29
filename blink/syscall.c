@@ -5884,6 +5884,11 @@ void OpSyscall(P) {
   r0 = Get64(m->r10);
   r8 = Get64(m->r8);
   r9 = Get64(m->r9);
+#ifdef __EMSCRIPTEN__
+  { extern _Thread_local int g_blink_unixsock_vmid; extern void blink_usmark(const char*);
+    if (g_blink_unixsock_vmid == 1) { char b[48];
+      snprintf(b, sizeof(b), "SVR sys 0x%llx", (unsigned long long)(ax & 0xfff)); blink_usmark(b); } }
+#endif
   switch (ax & 0xfff) {
     SYSCALL(3, 0x000, "read", SysRead, STRACE_READ);
     SYSCALL(3, 0x001, "write", SysWrite, STRACE_WRITE);
