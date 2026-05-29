@@ -552,9 +552,34 @@ static void *EmVmThread(void *argp) {
     FILE *mk = fopen(p, "w"); if (mk) { fputs("started\n", mk); fclose(mk); } }
   cm->thread = pthread_self();
   cs->trapexit = true;
-  if (!(rc = sigsetjmp(cm->onhalt, 1))) {
-    cm->canhalt = true;
-    Actor(cm);  // runs until the guest halts (longjmp back here)
+  // Full Blink()-style run loop: a bare `Actor()` under a single sigsetjmp only
+  // works until the FIRST recoverable trap. A live X server raises page faults,
+  // SIGALRM/SIGIO timer signals, and the preempt SIGTRAP; each longjmps back to
+  // cm->onhalt mid-instruction. We must reset the machine's per-run state and
+  // RE-ENTER Actor (delivering fatal host signals to the guest's own handlers),
+  // exiting only on the guest's exit trap. Without this, re-entering Actor with
+  // stale nofault/sysdepth/path state corrupts dispatch -> wasm table trap.
+  for (;;) {
+    rc = sigsetjmp(cm->onhalt, 1);
+    if (!rc) {
+      cm->canhalt = true;
+      Actor(cm);  // runs until a trap longjmps back here
+    }
+    if (rc == 1) rc = cm->trapno;  // sigsetjmp can fake-return 1; real trap in trapno
+    cm->sysdepth = 0;
+    cm->sigdepth = 0;
+    cm->canhalt = false;
+    cm->nofault = false;
+    cm->insyscall = false;
+    CollectPageLocks(cm);
+    CollectGarbage(cm, 0);
+    if (IsMakingPath(cm)) AbandonPath(cm);
+    if (rc == kMachineExitTrap || cs->exited) break;  // guest exit -> done
+    if (rc == kMachineFatalSystemSignal) {
+      HandleFatalSystemSignal(cm, &g_siginfo);  // page fault etc. -> guest handler
+    }
+    // Any other trap (preempt SIGTRAP, delivered signal): state is reset; loop
+    // re-enters Actor so the guest continues running its handler / next insn.
   }
   g_em_thread_status[slot & 7] = (cs->exited ? cs->exitcode : 0);
   g_em_thread_done[slot & 7] = 1;
