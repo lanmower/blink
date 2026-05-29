@@ -518,6 +518,10 @@ int blink_unix_poll(struct pollfd *fds, unsigned long nfds, int timeout) {
     if (lr >= 0) { if (lr == 1 && (fds[i].events & POLLIN)) { fds[i].revents |= POLLIN; ready++; } continue; }
     int cr = blink_unix_conn_readable(fds[i].fd);
     if (cr >= 0) {
+      static int pc = 0;
+      if (pc < 30) { pc++; char b[96];
+        snprintf(b, sizeof(b), "poll conn fd=%d vmid=%d ev=%d cr=%d", fds[i].fd,
+                 g_blink_unixsock_vmid, fds[i].events, cr); USMARK(b); }
       if (cr == 1 && (fds[i].events & POLLIN)) { fds[i].revents |= POLLIN; ready++; }
       if (fds[i].events & POLLOUT) { fds[i].revents |= POLLOUT; ready++; }  // ring rarely full
       continue;
