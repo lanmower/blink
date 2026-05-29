@@ -2224,7 +2224,17 @@ static i64 SysRecvmsg(struct Machine *m, i32 fildes, i64 msgaddr, i32 flags) {
       msg.msg_name = &addr;
       msg.msg_namelen = sizeof(addr);
     }
+#ifdef __EMSCRIPTEN__
+    if (fildes >= 9) { extern void blink_usmark(const char*); char b[96];
+      snprintf(b, sizeof(b), "recvmsg(%d) PRE-VFS iovlen=%llu controllen=%llu flags=%d",
+               fildes, (unsigned long long)iovlen,
+               (unsigned long long)Read64(gm.controllen), flags); blink_usmark(b); }
+#endif
     INTERRUPTIBLE(!norestart, rc = VfsRecvmsg(fildes, &msg, flags));
+#ifdef __EMSCRIPTEN__
+    if (fildes >= 9) { extern void blink_usmark(const char*); char b[64];
+      snprintf(b, sizeof(b), "recvmsg(%d) POST-VFS rc=%zd", fildes, (ssize_t)rc); blink_usmark(b); }
+#endif
     if (rc != -1) {
       Write32(gm.flags, UnXlatMsgFlags(msg.msg_flags));
       unassert(CopyToUserWrite(m, msgaddr, &gm, sizeof(gm)) != -1);
