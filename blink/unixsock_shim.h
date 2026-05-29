@@ -15,6 +15,7 @@
 // AF_UNIX, so non-unix sockets behave exactly as before.
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 
 int blink_unix_socket(int domain, int type, int protocol);
 int blink_unix_bind(int fd, const struct sockaddr *addr, socklen_t len);
@@ -29,6 +30,19 @@ int blink_unix_close(int fd);
 // should fall through to the normal host poll). VM-scope-agnostic on purpose:
 // any thread polling this fd sees pending connections in the shared registry.
 int blink_unix_listener_readable(int fd);
+// Data path for in-process connected pairs (socketpair is unsupported on the
+// emscripten host). Tracked connected fds carry bytes through shared-memory ring
+// buffers, coherent across worker threads; untracked fds fall through to libc.
+ssize_t blink_unix_readv(int fd, const struct iovec *iov, int iovcnt);
+ssize_t blink_unix_writev(int fd, const struct iovec *iov, int iovcnt);
+struct pollfd;
+int blink_unix_poll(struct pollfd *fds, unsigned long nfds, int timeout);
+struct msghdr;
+ssize_t blink_unix_recvmsg(int fd, struct msghdr *msg, int flags);
+ssize_t blink_unix_sendmsg(int fd, const struct msghdr *msg, int flags);
+// Readiness of a tracked CONNECTED fd's inbound ring (cross-thread coherent).
+// 1 = bytes available, 0 = tracked but empty, -1 = not a tracked connected fd.
+int blink_unix_conn_readable(int fd);
 int blink_unix_setsockopt(int fd, int level, int optname, const void *optval,
                           socklen_t optlen);
 int blink_unix_getsockopt(int fd, int level, int optname, void *optval,

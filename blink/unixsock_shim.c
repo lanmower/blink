@@ -54,11 +54,104 @@ struct UnixSock {
   int bound;                   // bind() has been called on this fd
   int vmid;                    // which concurrent VM created this socket
   char path[UNIX_PATH_MAX];    // bind path (listeners) — empty otherwise
-  int pending[UNIX_MAX_BACKLOG];  // queued server-side fds awaiting accept()
+  int pending[UNIX_MAX_BACKLOG];  // (legacy) queued slot markers
+  void *pconn[UNIX_MAX_BACKLOG];  // queued shared connections awaiting accept()
   int npending;
 };
 
 static struct UnixSock g_socks[UNIX_MAX_SOCKS];
+
+// ---- In-process connected-pair data path -----------------------------------
+// socketpair() is unsupported on the emscripten host, and even a pipe-pair would
+// not be poll-coherent across worker threads. So a connected pair is a shared
+// UnixConn with two byte rings; each endpoint reads one ring and writes the
+// other. Readiness is the inbound ring's count (shared memory, cross-thread
+// coherent). A real pipe read-end backs each endpoint fd so it stays a valid,
+// closable, distinct fd, but no data flows through that pipe.
+
+#define UNIX_RING_SZ  (1 << 18)  // 256 KiB per direction; X protocol bursts fit
+
+struct UnixRing {
+  unsigned char buf[UNIX_RING_SZ];
+  volatile unsigned head;  // write index (producer)
+  volatile unsigned tail;  // read index (consumer)
+};
+
+struct UnixConn {
+  struct UnixRing a2b;  // bytes written by endpoint A, read by endpoint B
+  struct UnixRing b2a;  // bytes written by endpoint B, read by endpoint A
+  volatile int refs;    // 2 while both ends open; entry freed at 0
+  volatile int a_open;
+  volatile int b_open;
+};
+
+#define UNIX_MAX_CONNFDS 512
+struct UnixConnFd {
+  int fd;                  // host fd handed to this endpoint (-1 = free)
+  int vmid;                // owning VM (fd numbers collide across VMs)
+  int wake_wr;             // backing pipe write end (parked; never written)
+  struct UnixConn *conn;   // shared connection
+  int side;                // 0 = side A, 1 = side B
+};
+static struct UnixConnFd g_connfds[UNIX_MAX_CONNFDS];
+
+static struct UnixConnFd *FindConnFd(int fd) {
+  for (int i = 0; i < UNIX_MAX_CONNFDS; i++)
+    if (g_connfds[i].fd == fd && g_connfds[i].conn &&
+        g_connfds[i].vmid == g_blink_unixsock_vmid)
+      return &g_connfds[i];
+  return 0;
+}
+
+static struct UnixConnFd *AllocConnFd(void) {
+  for (int i = 0; i < UNIX_MAX_CONNFDS; i++)
+    if (!g_connfds[i].conn) return &g_connfds[i];
+  return 0;
+}
+
+static unsigned RingUsed(struct UnixRing *r) { return r->head - r->tail; }
+static unsigned RingFree(struct UnixRing *r) { return UNIX_RING_SZ - RingUsed(r); }
+
+static size_t RingWrite(struct UnixRing *r, const unsigned char *p, size_t n) {
+  size_t w = 0;
+  unsigned freeb = RingFree(r);
+  if (n > freeb) n = freeb;
+  while (w < n) {
+    unsigned pos = r->head & (UNIX_RING_SZ - 1);
+    size_t chunk = UNIX_RING_SZ - pos;
+    if (chunk > n - w) chunk = n - w;
+    memcpy(r->buf + pos, p + w, chunk);
+    r->head += chunk;
+    w += chunk;
+  }
+  return w;
+}
+
+static size_t RingRead(struct UnixRing *r, unsigned char *p, size_t n) {
+  size_t got = 0;
+  unsigned used = RingUsed(r);
+  if (n > used) n = used;
+  while (got < n) {
+    unsigned pos = r->tail & (UNIX_RING_SZ - 1);
+    size_t chunk = UNIX_RING_SZ - pos;
+    if (chunk > n - got) chunk = n - got;
+    memcpy(p + got, r->buf + pos, chunk);
+    r->tail += chunk;
+    got += chunk;
+  }
+  return got;
+}
+
+// Endpoint's inbound (read) and outbound (write) ring for its side.
+static struct UnixRing *ConnInRing(struct UnixConnFd *c) {
+  return c->side == 0 ? &c->conn->b2a : &c->conn->a2b;
+}
+static struct UnixRing *ConnOutRing(struct UnixConnFd *c) {
+  return c->side == 0 ? &c->conn->a2b : &c->conn->b2a;
+}
+static int ConnPeerOpen(struct UnixConnFd *c) {
+  return c->side == 0 ? c->conn->b_open : c->conn->a_open;
+}
 
 // Which concurrent VM is currently executing (set by blinkenlib on vm switch).
 // close() is VM-scoped: a close in VM-B must not free VM-A's socket entry even
@@ -238,22 +331,27 @@ int blink_unix_connect(int fd, const struct sockaddr *addr, socklen_t len) {
     errno = ECONNREFUSED; return -1;
   }
   if (l->npending >= UNIX_MAX_BACKLOG) { errno = EAGAIN; return -1; }
-  // Real bidirectional data channel between client and server.
-  int sp[2];
-  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sp) != 0) return -1;
-  // Hand the server end to the listener's accept queue.
-  l->pending[l->npending++] = sp[1];
-  // Turn the client fd into the client end of the pair: dup2 over the backing
-  // pipe read-end so the caller's fd number keeps working and now carries data.
-  if (dup2(sp[0], fd) < 0) { close(sp[0]); close(sp[1]); l->npending--; return -1; }
-  close(sp[0]);
-  // The client fd is now a real socketpair end; drop its pipe write side and
-  // stop tracking it (libc read/write/close handle it natively from here).
-  if (s->wake_wr >= 0) { close(s->wake_wr); s->wake_wr = -1; }
-  s->state = UNIX_FREE;
-  s->fd = -1;
-  // Wake the listener's epoll/poll: write a readiness byte to its read-end so
-  // the X server's event loop returns and calls accept().
+  // Allocate a shared connection (two byte rings) for this client/server pair.
+  // socketpair() is unsupported on the emscripten host, so the rings ARE the
+  // data channel; read/write are routed through blink_unix_readv/writev.
+  struct UnixConn *conn = (struct UnixConn *)calloc(1, sizeof(struct UnixConn));
+  if (!conn) { errno = ENOMEM; return -1; }
+  conn->refs = 2; conn->a_open = 1; conn->b_open = 1;
+  // The CLIENT keeps its existing fd as endpoint A: reuse its backing pipe
+  // read-end (valid/pollable/closable) but route its data through the rings.
+  struct UnixConnFd *ca = AllocConnFd();
+  if (!ca) { free(conn); errno = EMFILE; return -1; }
+  ca->fd = fd; ca->vmid = g_blink_unixsock_vmid; ca->wake_wr = s->wake_wr;
+  ca->conn = conn; ca->side = 0;
+  // The client socket entry is now a connected endpoint tracked in g_connfds;
+  // release its listener-table slot (keep the pipe fd alive via ca->wake_wr).
+  s->wake_wr = -1; s->state = UNIX_FREE; s->fd = -1;
+  // Hand the shared connection to the listener's accept queue (server makes its
+  // own endpoint-B fd in accept()).
+  l->pending[l->npending++] = 0;  // slot marker (unused int)
+  l->pconn[l->npending - 1] = conn;
+  // Wake the listener's poll via shared-memory readiness (npending>0); also poke
+  // its backing pipe in case anything still polls it directly.
   if (l->wake_wr >= 0) { char b = 1; (void)write(l->wake_wr, &b, 1); }
   return 0;
 }
@@ -266,10 +364,23 @@ int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len) {
   if (!s) return accept(fd, addr, len);
   if (s->state != UNIX_LISTENING) { errno = EINVAL; return -1; }
   if (s->npending == 0) { errno = EAGAIN; return -1; }  // nonblocking: nothing yet
-  int conn = s->pending[0];
-  USDBG("accept -> conn fd=%d", conn);
-  for (int i = 1; i < s->npending; i++) s->pending[i - 1] = s->pending[i];
-  s->pending[--s->npending] = -1;
+  struct UnixConn *conn = (struct UnixConn *)s->pconn[0];
+  for (int i = 1; i < s->npending; i++) {
+    s->pending[i - 1] = s->pending[i];
+    s->pconn[i - 1] = s->pconn[i];
+  }
+  s->npending--;
+  s->pending[s->npending] = -1;
+  s->pconn[s->npending] = 0;
+  // Build endpoint B: a fresh backing pipe read-end (valid/closable fd) whose
+  // data is routed through the shared rings. The server reads b2a / writes a2b.
+  int pp[2];
+  if (pipe(pp) != 0) { errno = EMFILE; return -1; }
+  struct UnixConnFd *cb = AllocConnFd();
+  if (!cb) { close(pp[0]); close(pp[1]); conn->b_open = 0; errno = EMFILE; return -1; }
+  cb->fd = pp[0]; cb->vmid = g_blink_unixsock_vmid; cb->wake_wr = pp[1];
+  cb->conn = conn; cb->side = 1;
+  USDBG("accept -> endpoint-B fd=%d vmid=%d", pp[0], g_blink_unixsock_vmid);
   // Drain one readiness byte (written by connect) so the listener fd's poll
   // level matches the remaining queue depth.
   { char b; (void)read(s->fd, &b, 1); }
@@ -280,7 +391,7 @@ int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len) {
       *len = sizeof(sa_family_t);
     }
   }
-  return conn;  // already a connected socketpair end
+  return cb->fd;  // connected endpoint, data via shared rings
 }
 
 // Xtrans calls setsockopt(SO_REUSEADDR), getsockopt(SO_ERROR), getsockname()
@@ -326,11 +437,115 @@ int blink_unix_getsockname(int fd, struct sockaddr *addr, socklen_t *len) {
   return 0;
 }
 
+// --- connected-pair readiness + data path ----------------------------------
+
+int blink_unix_conn_readable(int fd) {
+  struct UnixConnFd *c = FindConnFd(fd);
+  if (!c) return -1;
+  if (RingUsed(ConnInRing(c)) > 0) return 1;
+  // Peer closed with no buffered data -> readable (read returns EOF), so the X
+  // server's poll wakes and read() returns 0 rather than blocking forever.
+  if (!ConnPeerOpen(c)) return 1;
+  return 0;
+}
+
+ssize_t blink_unix_readv(int fd, const struct iovec *iov, int iovcnt) {
+  struct UnixConnFd *c = FindConnFd(fd);
+  if (!c) return readv(fd, iov, iovcnt);
+  struct UnixRing *r = ConnInRing(c);
+  if (RingUsed(r) == 0) {
+    if (!ConnPeerOpen(c)) return 0;  // EOF
+    errno = EAGAIN;                  // nonblocking: caller polls + retries
+    return -1;
+  }
+  ssize_t total = 0;
+  for (int i = 0; i < iovcnt && RingUsed(r) > 0; i++) {
+    size_t got = RingRead(r, (unsigned char *)iov[i].iov_base, iov[i].iov_len);
+    total += (ssize_t)got;
+    if (got < iov[i].iov_len) break;
+  }
+  return total;
+}
+
+ssize_t blink_unix_writev(int fd, const struct iovec *iov, int iovcnt) {
+  struct UnixConnFd *c = FindConnFd(fd);
+  if (!c) return writev(fd, iov, iovcnt);
+  if (!ConnPeerOpen(c)) { errno = EPIPE; return -1; }
+  struct UnixRing *r = ConnOutRing(c);
+  ssize_t total = 0;
+  for (int i = 0; i < iovcnt; i++) {
+    if (RingFree(r) == 0) break;
+    size_t w = RingWrite(r, (const unsigned char *)iov[i].iov_base,
+                         iov[i].iov_len);
+    total += (ssize_t)w;
+    if (w < iov[i].iov_len) break;
+  }
+  if (total == 0) { errno = EAGAIN; return -1; }
+  return total;
+}
+
+ssize_t blink_unix_recvmsg(int fd, struct msghdr *msg, int flags) {
+  struct UnixConnFd *c = FindConnFd(fd);
+  if (!c) return recvmsg(fd, msg, flags);
+  (void)flags;
+  ssize_t n = blink_unix_readv(fd, msg->msg_iov, (int)msg->msg_iovlen);
+  if (n >= 0) { msg->msg_controllen = 0; msg->msg_flags = 0; }
+  return n;
+}
+
+ssize_t blink_unix_sendmsg(int fd, const struct msghdr *msg, int flags) {
+  struct UnixConnFd *c = FindConnFd(fd);
+  if (!c) return sendmsg(fd, msg, flags);
+  (void)flags;
+  return blink_unix_writev(fd, msg->msg_iov, (int)msg->msg_iovlen);
+}
+
+int blink_unix_poll(struct pollfd *fds, unsigned long nfds, int timeout) {
+  // Replace tracked fds (listeners + connected endpoints) with shared-memory
+  // readiness; poll the rest via libc. Cross-thread coherent.
+  int ready = 0, has_untracked = 0;
+  for (unsigned long i = 0; i < nfds; i++) {
+    fds[i].revents = 0;
+    int lr = blink_unix_listener_readable(fds[i].fd);
+    if (lr >= 0) { if (lr == 1 && (fds[i].events & POLLIN)) { fds[i].revents |= POLLIN; ready++; } continue; }
+    int cr = blink_unix_conn_readable(fds[i].fd);
+    if (cr >= 0) {
+      if (cr == 1 && (fds[i].events & POLLIN)) { fds[i].revents |= POLLIN; ready++; }
+      if (fds[i].events & POLLOUT) { fds[i].revents |= POLLOUT; ready++; }  // ring rarely full
+      continue;
+    }
+    has_untracked = 1;
+  }
+  if (ready > 0) return ready;
+  if (!has_untracked) return 0;  // only tracked fds, none ready (caller re-polls)
+  // Cap the libc poll so we re-check shared readiness promptly.
+  int to = timeout; if (to < 0 || to > 20) to = 20;
+  int rc = poll(fds, (nfds_t)nfds, to);
+  // Re-stamp tracked fds after the libc poll (they were passed through unchanged).
+  for (unsigned long i = 0; i < nfds; i++) {
+    int cr = blink_unix_conn_readable(fds[i].fd);
+    if (cr >= 0) {
+      short add = 0;
+      if (cr == 1 && (fds[i].events & POLLIN) && !(fds[i].revents & POLLIN)) add |= POLLIN;
+      if ((fds[i].events & POLLOUT) && !(fds[i].revents & POLLOUT)) add |= POLLOUT;
+      if (add) { if (!fds[i].revents) rc++; fds[i].revents |= add; }
+    }
+  }
+  return rc;
+}
+
 int blink_unix_close(int fd) {
+  struct UnixConnFd *c = FindConnFd(fd);
+  if (c) {
+    // Mark this endpoint closed so the peer sees EOF; free the conn at refs 0.
+    if (c->side == 0) c->conn->a_open = 0; else c->conn->b_open = 0;
+    if (--c->conn->refs <= 0) free(c->conn);
+    if (c->wake_wr >= 0) close(c->wake_wr);
+    c->conn = 0; c->fd = -1; c->wake_wr = -1;
+    return close(fd);
+  }
   struct UnixSock *s = FindByFd(fd);
   if (s) {
-    for (int i = 0; i < s->npending; i++)
-      if (s->pending[i] >= 0) close(s->pending[i]);
     if (s->wake_wr >= 0) close(s->wake_wr);
     s->wake_wr = -1;
     s->state = UNIX_FREE;
