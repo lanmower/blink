@@ -102,6 +102,11 @@
 
 #ifdef HAVE_EPOLL_PWAIT1
 #include <sys/epoll.h>
+#elif defined(__EMSCRIPTEN__)
+// emscripten's sysroot has no <sys/epoll.h>; use blink's poll()-backed shim so
+// the X server (and anything else needing epoll) works under wasm.
+#include "blink/epoll_shim.h"
+#define HAVE_EPOLL_SHIM 1
 #endif
 
 #ifdef HAVE_SYS_MOUNT_H
@@ -5282,7 +5287,7 @@ static int SysPipe(struct Machine *m, i64 pipefds_addr) {
   return SysPipe2(m, pipefds_addr, 0);
 }
 
-#ifdef HAVE_EPOLL_PWAIT1
+#if defined(HAVE_EPOLL_PWAIT1) || defined(HAVE_EPOLL_SHIM)
 
 static i32 SysEpollCreate1(struct Machine *m, i32 flags) {
   int lim, fildes, oflags, sysflags;
@@ -5744,7 +5749,7 @@ void OpSyscall(P) {
     SYSCALL(5, 0x147, "preadv2", SysPreadv2, STRACE_PREADV2);
     SYSCALL(5, 0x148, "pwritev2", SysPwritev2, STRACE_PWRITEV2);
     SYSCALL(3, 0x1B4, "close_range", SysCloseRange, STRACE_3);
-#ifdef HAVE_EPOLL_PWAIT1
+#if defined(HAVE_EPOLL_PWAIT1) || defined(HAVE_EPOLL_SHIM)
     SYSCALL(1, 0x0D5, "epoll_create", SysEpollCreate, STRACE_1);
     SYSCALL(1, 0x123, "epoll_create1", SysEpollCreate1, STRACE_1);
     SYSCALL(4, 0x0E9, "epoll_ctl", SysEpollCtl, STRACE_4);
