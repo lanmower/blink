@@ -595,6 +595,7 @@ static int SysFork(struct Machine *m) {
   // there is no second control flow — we fall through returning 0 once, which
   // matches a child that simply runs the post-fork code in-line; for the X
   // server / Popen case the child always execs immediately.
+  if (getenv("BLINK_FORK_DEBUG")) fprintf(stderr, "[forkexec] SysFork active=%d\n", g_em_fork.active);
   if (!g_em_fork.active) {
     int rc = sigsetjmp(g_em_fork.jb, 1);
     if (rc == 0) {
@@ -735,7 +736,11 @@ static bool IsForkOrVfork(u64 flags) {
 static int SysClone(struct Machine *m, u64 flags, u64 stack, u64 ptid, u64 ctid,
                     u64 tls, u64 func) {
   if (IsForkOrVfork(flags)) {
-#ifdef HAVE_FORK
+#ifdef __EMSCRIPTEN__
+    // musl's fork()/posix_spawn route through clone(); the in-VM synchronous
+    // fork+exec path lives in SysFork (host fork() is unavailable in wasm).
+    return SysFork(m);
+#elif defined(HAVE_FORK)
     return Fork(m, flags, stack, ctid);
 #else
     LOGF("forking support disabled");
@@ -3712,7 +3717,10 @@ static int SysExecve(struct Machine *m, i64 pa, i64 aa, i64 ea) {
   // record its status under a synthetic pid, then return to the parent's fork()
   // with that pid via siglongjmp. The guest child branch never returns here.
   if (g_em_fork.active) {
-    int status = EmRunChildInline(m, prog, argv, envp);
+    int status;
+    if (getenv("BLINK_FORK_DEBUG")) fprintf(stderr, "[forkexec] child execve %s\n", prog);
+    status = EmRunChildInline(m, prog, argv, envp);
+    if (getenv("BLINK_FORK_DEBUG")) fprintf(stderr, "[forkexec] child %s exited status=0x%x\n", prog, status);
     g_em_fork.child_pid = EmRecordChild(status < 0 ? (127 << 8) : status);
     siglongjmp(g_em_fork.jb, 1);  // resume SysFork in the parent context
   }
