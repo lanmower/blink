@@ -638,3 +638,17 @@ int main(int argc, char *argv[]) {
   // vfs setup goes here
   puts("blink ready!");
 }
+
+#ifdef __EMSCRIPTEN__
+// Strong override of emscripten's host mprotect syscall stub. Emscripten leaves
+// ___syscall_mprotect returning -ENOSYS and spams "unsupported syscall:
+// __syscall_mprotect"; under wasm there is no page protection, so this is a
+// correct success no-op. The previous failure: ENOSYS made musl/Xorg arena
+// allocators retry with fresh mmaps in a loop, steadily eating the whole heap
+// (the X-server smoke grew ~100MB/step to 4GB then aborted). Returning 0 lets
+// the allocator settle. A strong C definition wins over emscripten's weak stub.
+long __syscall_mprotect(long addr, long len, long prot) {
+  (void)addr; (void)len; (void)prot;
+  return 0;
+}
+#endif
