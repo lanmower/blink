@@ -4686,6 +4686,18 @@ static i32 Select(struct Machine *m,          //
   FD_ZERO(&readyreadfds);
   FD_ZERO(&readywritefds);
   FD_ZERO(&readyexceptfds);
+#ifdef __EMSCRIPTEN__
+  { static int sc = 0;
+    if (sc < 12) { sc++;
+      char line[160]; int o = 0;
+      o += snprintf(line + o, sizeof(line) - o, "SELECT nfds=%d r={", nfds);
+      for (int z = 0; z < nfds && o < 120; z++)
+        if (FD_ISSET(z, &readfds)) o += snprintf(line + o, sizeof(line) - o, "%d ", z);
+      snprintf(line + o, sizeof(line) - o, "}");
+      FILE *mk = fopen("/em-unixsock.log", "a");
+      if (mk) { fputs(line, mk); fputc('\n', mk); fclose(mk); }
+    } }
+#endif
   if (sigmaskp_guest) {
     oldmask_guest = m->sigmask;
     m->sigmask = *sigmaskp_guest;
