@@ -741,6 +741,12 @@ static int SysClone(struct Machine *m, u64 flags, u64 stack, u64 ptid, u64 ctid,
   fprintf(stderr, "[forkexec] SysClone flags=0x%llx isfork=%d\n",
           (unsigned long long)flags, (int)IsForkOrVfork(flags));
   fflush(stderr);
+  // Host-FS marker the CI step can stat after the run (survives any guest
+  // stderr swallowing / abnormal exit): proves SysClone was dispatched.
+  { FILE *mk = fopen("/tmp/blink-clone-fired", "a");
+    if (mk) { fprintf(mk, "clone flags=0x%llx isfork=%d\n",
+                       (unsigned long long)flags, (int)IsForkOrVfork(flags));
+              fclose(mk); } }
 #endif
   if (IsForkOrVfork(flags)) {
 #ifdef __EMSCRIPTEN__
