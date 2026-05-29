@@ -359,7 +359,7 @@ void SetUp(void) {
   // its own first fork() as the (tolerated-ENOSYS) startup daemonize fork. The
   // nested child machines created by EmRunChildInline do NOT call SetUp, so the
   // fork depth/stack is preserved across nesting levels within one run.
-  { extern int g_em_fork_total; g_em_fork_total = 0; }
+  { extern int g_em_fork_total, g_em_fork_depth; g_em_fork_total = 0; g_em_fork_depth = 0; }
 #endif
 
   // TODO: from blinkenlights. define these callbacks

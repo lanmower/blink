@@ -517,7 +517,7 @@ struct EmForkCtx {
 };
 #define EM_FORK_MAXDEPTH 8
 static struct EmForkCtx g_em_fork_stack[EM_FORK_MAXDEPTH];
-static int g_em_fork_depth = 0;  // number of armed (awaiting-execve) fork ctxs
+int g_em_fork_depth = 0;  // number of armed (awaiting-execve) fork ctxs (reset in SetUp)
 // Per top-level program: the very first fork() is Xvfb's startup daemonize fork
 // (no exec); returning 0 drives Xvfb to a bad exit 127, but ENOSYS makes it fall
 // back gracefully. Every subsequent fork is an exec-fork (Popen / sh) the in-VM
