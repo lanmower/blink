@@ -506,16 +506,23 @@ struct EmChild {
 static struct EmChild g_em_children[EM_MAX_CHILDREN];
 static int g_em_next_pid = 0x40000;  // synthetic pids, distinct from real ones
 
-// Re-entry state for the in-flight vfork-style child.
+// Re-entry state for an in-flight vfork-style child. A STACK supports nesting:
+// Xvfb's Popen forks /bin/sh, and sh itself forks xkbcomp — two levels deep.
 struct EmForkCtx {
   sigjmp_buf jb;        // SysFork sets this; SysExecve longjmps back to it
   u8 beg[128];          // parent general register file snapshot
   u64 ip;               // parent instruction pointer (after the fork syscall)
   u32 flags;            // parent eflags
   int child_pid;        // pid handed to the parent
-  bool active;          // a fork child is mid-flight (awaiting its execve)
 };
-static struct EmForkCtx g_em_fork;  // one synchronous child at a time
+#define EM_FORK_MAXDEPTH 8
+static struct EmForkCtx g_em_fork_stack[EM_FORK_MAXDEPTH];
+static int g_em_fork_depth = 0;  // number of armed (awaiting-execve) fork ctxs
+// Per top-level program: the very first fork() is Xvfb's startup daemonize fork
+// (no exec); returning 0 drives Xvfb to a bad exit 127, but ENOSYS makes it fall
+// back gracefully. Every subsequent fork is an exec-fork (Popen / sh) the in-VM
+// model runs. Reset to 0 at each top-level LoadProgram (see blinkenlib SetUp).
+int g_em_fork_total = 0;
 
 extern struct System *NewSystem(struct XedMachineMode);
 extern struct Machine *NewMachine(struct System *, struct Machine *);
@@ -597,31 +604,28 @@ static int SysFork(struct Machine *m) {
   // there is no second control flow — we fall through returning 0 once, which
   // matches a child that simply runs the post-fork code in-line; for the X
   // server / Popen case the child always execs immediately.
-  // PROVEN behavior split: Xvfb's FIRST fork() is a startup daemonize-style
-  // fork whose child-continuation (return 0) drives Xvfb to a bad exit 127,
-  // while returning ENOSYS makes Xvfb gracefully fall back and proceed to the
-  // keymap step. The LATER fork (Popen xkbcomp) is an exec-fork that the in-VM
-  // model handles. So: fail the startup fork with ENOSYS (Xvfb tolerates it),
-  // and run the in-VM vfork-exec model for subsequent forks.
+  // PROVEN behavior split: Xvfb's FIRST top-level fork() is a startup daemonize
+  // fork (no exec) whose child-continuation (return 0) drives Xvfb to a bad exit
+  // 127, while ENOSYS makes Xvfb fall back gracefully and proceed. Every later
+  // fork is an exec-fork (Popen -> /bin/sh, and sh -> xkbcomp, nested) that the
+  // in-VM model runs. So: ENOSYS the first top-level fork; vfork-exec the rest.
+  if (g_em_fork_total++ == 0) { errno = ENOSYS; return -1; }
+  if (g_em_fork_depth >= EM_FORK_MAXDEPTH) { errno = EAGAIN; return -1; }
   {
-    static int em_fork_seen = 0;
-    if (em_fork_seen++ == 0) { errno = ENOSYS; return -1; }  // startup daemonize fork
-  }
-  {
-    int rc = sigsetjmp(g_em_fork.jb, 1);
+    struct EmForkCtx *ctx = &g_em_fork_stack[g_em_fork_depth];
+    int rc = sigsetjmp(ctx->jb, 1);
     if (rc == 0) {
-      memcpy(g_em_fork.beg, m->beg, sizeof(g_em_fork.beg));
-      g_em_fork.ip = m->ip;
-      g_em_fork.flags = m->flags;
-      g_em_fork.active = true;
-      return 0;  // guest enters the child branch
+      memcpy(ctx->beg, m->beg, sizeof(ctx->beg));
+      ctx->ip = m->ip;
+      ctx->flags = m->flags;
+      g_em_fork_depth++;       // this ctx is now armed, awaiting the child execve
+      return 0;                // guest enters the child branch
     } else {
-      // returned from the child's execve via siglongjmp; restore parent regs
-      memcpy(m->beg, g_em_fork.beg, sizeof(m->beg));
-      m->ip = g_em_fork.ip;
-      m->flags = g_em_fork.flags;
-      g_em_fork.active = false;
-      return g_em_fork.child_pid;  // parent sees the child pid
+      // child's execve longjmp'd back; restore the parent regs from this ctx
+      memcpy(m->beg, ctx->beg, sizeof(m->beg));
+      m->ip = ctx->ip;
+      m->flags = ctx->flags;
+      return ctx->child_pid;   // parent sees the child pid
     }
   }
 #else
@@ -3725,20 +3729,17 @@ static int SysExecve(struct Machine *m, i64 pa, i64 aa, i64 ea) {
   if (!(argv = CopyStrList(m, aa))) return -1;
   if (!(envp = CopyStrList(m, ea))) return -1;
 #ifdef __EMSCRIPTEN__
-  fprintf(stderr, "[forkexec] SysExecve %s (fork active=%d)\n", prog,
-          g_em_fork.active);
-  fflush(stderr);
   // If we're in the child branch of an emscripten fork(), this execve replaces
   // the (virtual) child: run the target inline to completion sharing our fds,
   // record its status under a synthetic pid, then return to the parent's fork()
   // with that pid via siglongjmp. The guest child branch never returns here.
-  if (g_em_fork.active) {
-    int status;
-    fprintf(stderr, "[forkexec] child execve %s\n", prog); fflush(stderr);
-    status = EmRunChildInline(m, prog, argv, envp);
-    fprintf(stderr, "[forkexec] child %s exited status=0x%x\n", prog, status); fflush(stderr);
-    g_em_fork.child_pid = EmRecordChild(status < 0 ? (127 << 8) : status);
-    siglongjmp(g_em_fork.jb, 1);  // resume SysFork in the parent context
+  // Pop the top armed fork ctx (nesting: sh runs inside Xvfb's child, and sh's
+  // own fork+exec of xkbcomp arms a deeper ctx).
+  if (g_em_fork_depth > 0) {
+    struct EmForkCtx *ctx = &g_em_fork_stack[--g_em_fork_depth];
+    int status = EmRunChildInline(m, prog, argv, envp);
+    ctx->child_pid = EmRecordChild(status < 0 ? (127 << 8) : status);
+    siglongjmp(ctx->jb, 1);  // resume the matching SysFork in the parent context
   }
 #endif
   LOCK(&m->system->exec_lock);

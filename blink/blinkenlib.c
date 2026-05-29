@@ -354,6 +354,14 @@ void SetUp(void) {
   // reset the counter we use to limit the execution cycles of a program
   switches_count = 0;
 
+#ifdef __EMSCRIPTEN__
+  // Reset the in-VM fork accounting per top-level program so each runElf treats
+  // its own first fork() as the (tolerated-ENOSYS) startup daemonize fork. The
+  // nested child machines created by EmRunChildInline do NOT call SetUp, so the
+  // fork depth/stack is preserved across nesting levels within one run.
+  { extern int g_em_fork_total; g_em_fork_total = 0; }
+#endif
+
   // TODO: from blinkenlights. define these callbacks
   //  m->system->redraw = Redraw;
   //  m->system->onbinbase = OnBinbase;
