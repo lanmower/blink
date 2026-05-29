@@ -46,6 +46,7 @@ int blink_unix_conn_readable(int fd);
 // FIONREAD for connected endpoints: writes the inbound ring byte count to *out
 // and returns 1 if fd is a tracked connected endpoint, else 0 (fall through).
 int blink_unix_fionread(int fd, int *out);
+int blink_unix_is_tracked(int fd);
 int blink_unix_setsockopt(int fd, int level, int optname, const void *optval,
                           socklen_t optlen);
 int blink_unix_getsockopt(int fd, int level, int optname, void *optval,

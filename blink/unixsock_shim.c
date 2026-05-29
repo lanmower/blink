@@ -483,6 +483,13 @@ int blink_unix_getsockname(int fd, struct sockaddr *addr, socklen_t *len) {
 // ring, not the backing pipe, so a host ioctl(FIONREAD) on the pipe reports 0.
 // Xtrans/dix use this to size reads and treat readable+0 as a hangup, closing
 // the client. Report the inbound ring's byte count. Returns 1 if handled.
+// 1 if fd is any tracked in-process unix fd (listener, open socket, or connected
+// endpoint) in the current VM; used by SO_PEERCRED to decide whether to
+// synthesize a credential.
+int blink_unix_is_tracked(int fd) {
+  return (FindByFd(fd) || FindConnFd(fd)) ? 1 : 0;
+}
+
 int blink_unix_fionread(int fd, int *out) {
   struct UnixConnFd *c = FindConnFd(fd);
   if (!c) return 0;
