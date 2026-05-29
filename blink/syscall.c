@@ -597,15 +597,18 @@ static int SysFork(struct Machine *m) {
   // there is no second control flow — we fall through returning 0 once, which
   // matches a child that simply runs the post-fork code in-line; for the X
   // server / Popen case the child always execs immediately.
-  // Each fork RE-ARMS (overwrites any prior snapshot) rather than blocking when
-  // a prior fork never exec'd. Xvfb's startup daemonize-fork returns 0 (child
-  // continues; the would-be parent that exits is simply dropped, which is the
-  // correct single-process daemonize result) and leaves the snapshot armed but
-  // harmless; the later Popen(xkbcomp) fork re-arms and IS followed by execve,
-  // which runs the child inline and longjmps back here to hand the parent the
-  // child pid. (Proven: with fork=ENOSYS Xvfb still reaches the keymap, so the
-  // startup fork is optional; returning 0 is at least as good and keeps the
-  // exec-fork path available.)
+  // PROVEN behavior split: Xvfb's FIRST fork() is a startup daemonize-style
+  // fork whose child-continuation (return 0) drives Xvfb to a bad exit 127,
+  // while returning ENOSYS makes Xvfb gracefully fall back and proceed to the
+  // keymap step. The LATER fork (Popen xkbcomp) is an exec-fork that the in-VM
+  // model handles. So: fail the startup fork with ENOSYS (Xvfb tolerates it),
+  // and run the in-VM vfork-exec model for subsequent forks.
+  {
+    static int em_fork_seen = 0;
+    FILE *mk = fopen("/tmp/blink-fork-fired", "a");
+    if (mk) { fprintf(mk, "SysFork #%d active=%d\n", em_fork_seen, g_em_fork.active); fclose(mk); }
+    if (em_fork_seen++ == 0) { errno = ENOSYS; return -1; }  // startup daemonize fork
+  }
   {
     int rc = sigsetjmp(g_em_fork.jb, 1);
     if (rc == 0) {
