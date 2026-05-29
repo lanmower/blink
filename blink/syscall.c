@@ -1499,6 +1499,10 @@ static int SysSocket(struct Machine *m, i32 family, i32 type, i32 protocol) {
   if (!(lim = GetFileDescriptorLimit(m->system))) return emfile();
   if (flags) LOCK(&m->system->exec_lock);
   if ((fildes = VfsSocket(family, type, protocol)) != -1) {
+#ifdef __EMSCRIPTEN__
+    fprintf(stderr, "[syssocket] fam=%d type=%d proto=%d -> fildes=%d lim=%d\n",
+            family, type, protocol, fildes, lim);
+#endif
     if (fildes >= lim) {
       VfsClose(fildes);
       fildes = emfile();

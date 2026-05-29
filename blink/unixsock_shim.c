@@ -83,10 +83,11 @@ int blink_unix_socket(int domain, int type, int protocol) {
   // pollable, closable); the write end is kept so connect() can poke a wakeup
   // byte that makes the listener fd readable to poll()/the epoll shim.
   int pp[2];
-  if (pipe(pp) != 0) return -1;
+  if (pipe(pp) != 0) { USDBG("socket: pipe() failed errno=%d", errno); return -1; }
   struct UnixSock *s = AllocSlot(pp[0]);
-  if (!s) { close(pp[0]); close(pp[1]); errno = EMFILE; return -1; }
+  if (!s) { close(pp[0]); close(pp[1]); errno = EMFILE; USDBG("socket: no slot"); return -1; }
   s->wake_wr = pp[1];
+  USDBG("socket -> fd=%d (wake_wr=%d)", pp[0], pp[1]);
   return pp[0];
 }
 
