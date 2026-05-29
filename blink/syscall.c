@@ -5886,7 +5886,8 @@ void OpSyscall(P) {
   r9 = Get64(m->r9);
 #ifdef __EMSCRIPTEN__
   { extern _Thread_local int g_blink_unixsock_vmid; extern void blink_usmark(const char*);
-    if (g_blink_unixsock_vmid == 1) { char b[48];
+    extern int g_blink_log_svr_sys;  // set 1 once a client is accepted (post-handshake window)
+    if (g_blink_unixsock_vmid == 1 && g_blink_log_svr_sys) { char b[48];
       snprintf(b, sizeof(b), "SVR sys 0x%llx", (unsigned long long)(ax & 0xfff)); blink_usmark(b); } }
 #endif
   switch (ax & 0xfff) {

@@ -29,8 +29,18 @@ static void USMARK(const char *line) {
   FILE *mk = fopen("/em-unixsock.log", "a");
   if (mk) { fputs(line, mk); fputc('\n', mk); fclose(mk); }
 }
-// Public alias so other shims (epoll) can append to the same marker log.
-void blink_usmark(const char *line) { USMARK(line); }
+// Public alias so other shims (epoll) can append to the same marker log. Also
+// echo to stderr+flush so the last lines survive a fatal worker crash (the
+// MEMFS log is only dumped at end-of-run, which a crash skips). TEMP.
+void blink_usmark(const char *line) {
+  USMARK(line);
+  fprintf(stderr, "USMK %s\n", line);
+  fflush(stderr);
+}
+
+// Set to 1 after a client is accepted, to open the post-handshake syscall-trace
+// window in OpSyscall (TEMP diagnostic for the table-index trap).
+int g_blink_log_svr_sys = 0;
 
 // Track which fds we created as in-process AF_UNIX sockets, and the listener /
 // connection state for each. Single-threaded-enough for blink's emscripten
@@ -403,6 +413,7 @@ int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len) {
     }
   }
   { char b[64]; snprintf(b, sizeof(b), "accept RETURN fd=%d", cb->fd); USMARK(b); }
+  { extern int g_blink_log_svr_sys; g_blink_log_svr_sys = 1; }
   return cb->fd;  // connected endpoint, data via shared rings
 }
 
