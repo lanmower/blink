@@ -4914,6 +4914,19 @@ static int Poll(struct Machine *m, i64 fdsaddr, u64 nfds,
     if ((gfds = (struct pollfd_linux *)AddToFreeList(m, malloc(gfdssize)))) {
       rc = 0;
       CopyFromUserRead(m, gfds, fdsaddr, gfdssize);
+#ifdef __EMSCRIPTEN__
+      { static int pmc = 0;
+        if (pmc < 12) { pmc++;
+          char line[160]; int o = 0;
+          o += snprintf(line + o, sizeof(line) - o, "POLL nfds=%llu fds={",
+                        (unsigned long long)nfds);
+          for (u64 z = 0; z < nfds && o < 120; z++)
+            o += snprintf(line + o, sizeof(line) - o, "%d ", Read32(gfds[z].fd));
+          snprintf(line + o, sizeof(line) - o, "}");
+          FILE *mk = fopen("/em-unixsock.log", "a");
+          if (mk) { fputs(line, mk); fputc('\n', mk); fclose(mk); }
+        } }
+#endif
       for (;;) {
         for (i = 0; i < nfds; ++i) {
         TryAgain:
