@@ -4960,12 +4960,22 @@ static int Poll(struct Machine *m, i64 fdsaddr, u64 nfds,
 
 static int SysPoll(struct Machine *m, i64 fdsaddr, u64 nfds, i32 timeout_ms) {
   struct timespec deadline;
+#ifdef __EMSCRIPTEN__
+  // Cooperative scheduling: never block the single wasm thread in poll() — a
+  // blocking poll freezes concurrent VMs (X server + client) so they can't
+  // interleave. Peek non-blocking; the guest loops + preempts, the scheduler
+  // runs the other VM, the next poll sees readiness.
+  (void)timeout_ms;
+  deadline = GetTime();
+  return Poll(m, fdsaddr, nfds, deadline);
+#else
   if (timeout_ms < 0) {
     deadline = GetMaxTime();
   } else {
     deadline = AddTime(GetTime(), FromMilliseconds(timeout_ms));
   }
   return Poll(m, fdsaddr, nfds, deadline);
+#endif
 }
 
 static int SysPpoll(struct Machine *m, i64 fdsaddr, u64 nfds, i64 timeoutaddr,

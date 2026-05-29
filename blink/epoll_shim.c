@@ -112,8 +112,14 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents,
     idx[n] = j;
     n++;
   }
-  int rc = poll(pfds, n, timeout);
-  if (rc <= 0) return rc;  // 0 = timeout, -1 = error (errno set by poll)
+  // COOPERATIVE SCHEDULING: a blocking poll() freezes the whole wasm thread, so
+  // concurrent VMs (X server + client) cannot interleave through it. Force a
+  // non-blocking peek (timeout 0): no events -> return 0 (as a timeout) so the
+  // guest loops + preempts, letting the scheduler run the other VM; the next
+  // slice polls again. Converts blocking waits into cooperative spins.
+  (void)timeout;
+  int rc = poll(pfds, n, 0);
+  if (rc <= 0) return rc;  // 0 = nothing ready now, -1 = error
   int out = 0;
   for (int k = 0; k < n && out < maxevents; k++) {
     if (!pfds[k].revents) continue;
