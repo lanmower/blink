@@ -240,6 +240,14 @@ struct System *NewSystem(struct XedMachineMode mode) {
     Write64(s->rlim[i].cur, RLIM_INFINITY_LINUX);
     Write64(s->rlim[i].max, RLIM_INFINITY_LINUX);
   }
+  // RLIMIT_NOFILE must be a CONCRETE finite value, not infinity: musl's
+  // sysconf(_SC_OPEN_MAX) returns -1 when rlim_cur == RLIM_INFINITY, and
+  // libraries that gate on `fd >= sysconf(_SC_OPEN_MAX)` (e.g. libxtrans'
+  // SocketOpen) then reject every socket fd as out-of-range. Report a normal
+  // soft limit so those checks pass while keeping the file-descriptor table
+  // effectively unbounded for blink's own accounting.
+  Write64(s->rlim[RLIMIT_NOFILE_LINUX].cur, 1048576);
+  Write64(s->rlim[RLIMIT_NOFILE_LINUX].max, 1048576);
   s->pid = getpid();
   return s;
 }
