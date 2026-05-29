@@ -2223,6 +2223,11 @@ static i64 SysRecvmsg(struct Machine *m, i32 fildes, i64 msgaddr, i32 flags) {
   memset(&msg, 0, sizeof(msg));
   iovaddr = Read64(gm.iov);
   iovlen = Read64(gm.iovlen);
+#ifdef __EMSCRIPTEN__
+  if (fildes >= 9) { extern void blink_usmark(const char*); char b[80];
+    snprintf(b, sizeof(b), "recvmsg(%d) iovlen=%llu controllen=%llu", fildes,
+             (unsigned long long)iovlen, (unsigned long long)Read64(gm.controllen)); blink_usmark(b); }
+#endif
   if (!iovlen || iovlen > IOV_MAX_LINUX) {
     errno = EMSGSIZE;
     return -1;
