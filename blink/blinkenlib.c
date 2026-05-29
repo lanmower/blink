@@ -517,13 +517,13 @@ void *blinkenlib_vm_spawn(int withdebugger) {
 // read; trapexit makes the guest exit longjmp to this thread's sigsetjmp instead
 // of _exit()ing the whole process.
 extern void Actor(struct Machine *);
-struct EmThreadArg { struct Machine *m; struct System *s; };
+struct EmThreadArg { struct Machine *m; struct System *s; int slot; };
 volatile int g_em_thread_status[8];   // by slot
 volatile int g_em_thread_done[8];
 
 static void *EmVmThread(void *argp) {
   struct EmThreadArg *a = (struct EmThreadArg *)argp;
-  int slot = 0;  // single tracked slot (the client); the server runs untracked
+  int slot = a->slot;
   int rc;
   struct Machine *cm = a->m;
   struct System *cs = a->s;
@@ -539,29 +539,37 @@ static void *EmVmThread(void *argp) {
     cm->canhalt = true;
     Actor(cm);  // runs until the guest halts (longjmp back here)
   }
-  g_em_thread_status[slot] = (cs->exited ? cs->exitcode : 0);
-  g_em_thread_done[slot] = 1;
+  g_em_thread_status[slot & 7] = (cs->exited ? cs->exitcode : 0);
+  g_em_thread_done[slot & 7] = 1;
   return 0;
 }
 
-// Launch the given VM handle on a new pthread. Returns 0 on success.
+// Launch the given VM handle on a new pthread in tracking `slot`. Returns 0 ok.
 EMSCRIPTEN_KEEPALIVE
-int blinkenlib_run_thread(void *handle) {
+int blinkenlib_run_thread_slot(void *handle, int slot) {
   struct EmVm *h = (struct EmVm *)handle;
   struct EmThreadArg *a = (struct EmThreadArg *)malloc(sizeof(*a));
   pthread_t t;
-  a->m = h->m; a->s = h->s;
-  g_em_thread_done[0] = 0; g_em_thread_status[0] = 0;
+  a->m = h->m; a->s = h->s; a->slot = slot;
+  g_em_thread_done[slot & 7] = 0; g_em_thread_status[slot & 7] = 0;
   if (pthread_create(&t, 0, EmVmThread, a) != 0) { free(a); return -1; }
   pthread_detach(t);
   return 0;
 }
+EMSCRIPTEN_KEEPALIVE
+int blinkenlib_run_thread(void *handle) { return blinkenlib_run_thread_slot(handle, 0); }
 
 EMSCRIPTEN_KEEPALIVE
 int blinkenlib_thread_done(void) { return g_em_thread_done[0]; }
 
 EMSCRIPTEN_KEEPALIVE
 int blinkenlib_thread_status(void) { return g_em_thread_status[0]; }
+
+EMSCRIPTEN_KEEPALIVE
+int blinkenlib_thread_done_slot(int slot) { return g_em_thread_done[slot & 7]; }
+
+EMSCRIPTEN_KEEPALIVE
+int blinkenlib_thread_status_slot(int slot) { return g_em_thread_status[slot & 7]; }
 
 EMSCRIPTEN_KEEPALIVE
 void blinkenlib_run_fast() {
