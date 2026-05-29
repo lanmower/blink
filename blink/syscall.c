@@ -611,30 +611,18 @@ static int SysFork(struct Machine *m) {
   // there is no second control flow — we fall through returning 0 once, which
   // matches a child that simply runs the post-fork code in-line; for the X
   // server / Popen case the child always execs immediately.
-  // PROVEN behavior split: Xvfb's FIRST top-level fork() is a startup daemonize
-  // fork (no exec) whose child-continuation (return 0) drives Xvfb to a bad exit
-  // 127, while ENOSYS makes Xvfb fall back gracefully and proceed. Every later
-  // fork is an exec-fork (Popen -> /bin/sh, and sh -> xkbcomp, nested) that the
-  // in-VM model runs. So: ENOSYS the first top-level fork; vfork-exec the rest.
-  if (g_em_fork_total++ == 0) { errno = ENOSYS; return -1; }
-  if (g_em_fork_depth >= EM_FORK_MAXDEPTH) { errno = EAGAIN; return -1; }
-  {
-    struct EmForkCtx *ctx = &g_em_fork_stack[g_em_fork_depth];
-    int rc = sigsetjmp(ctx->jb, 1);
-    if (rc == 0) {
-      memcpy(ctx->beg, m->beg, sizeof(ctx->beg));
-      ctx->ip = m->ip;
-      ctx->flags = m->flags;
-      g_em_fork_depth++;       // this ctx is now armed, awaiting the child execve
-      return 0;                // guest enters the child branch
-    } else {
-      // child's execve longjmp'd back; restore the parent regs from this ctx
-      memcpy(m->beg, ctx->beg, sizeof(m->beg));
-      m->ip = ctx->ip;
-      m->flags = ctx->flags;
-      return ctx->child_pid;   // parent sees the child pid
-    }
-  }
+  // PROVEN-STABLE: host fork() is unavailable under wasm. Returning ENOSYS lets
+  // programs (Xvfb) gracefully fall back; returning 0 (vfork-exec emulation)
+  // mishandled Xvfb's startup daemonize fork and the nested Popen->sh->xkbcomp
+  // chain. Since the X keymap path is being moved off the xkbcomp subprocess
+  // (custom xorg-server build with a precompiled keymap), blink does not need a
+  // working in-VM fork here; report ENOSYS uniformly. The in-VM vfork-exec
+  // machinery (EmRunChildInline + g_em_fork_stack) is retained below for a
+  // future revisit but is not engaged while fork reports ENOSYS.
+  (void)g_em_fork_total;
+  (void)g_em_fork_depth;
+  errno = ENOSYS;
+  return -1;
 #else
   return Fork(m, 0, 0, 0);
 #endif
