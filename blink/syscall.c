@@ -578,12 +578,19 @@ static int EmRunChildInline(struct Machine *parent, char *prog, char **argv,
   }
   fprintf(stderr, "[forkexec] EmRunChildInline loading %s\n", prog);
   fflush(stderr);
+  // Marker at /em.log (root MEMFS, not the cleared /tmp): records each stage so
+  // the X-smoke can see how far the nested child got even on a fatal exit(127)
+  // from LoadProgram (which would otherwise kill the whole wasm silently).
+  { FILE *mk = fopen("/em.log", "a");
+    if (mk) { fprintf(mk, "preload %s\n", prog); fclose(mk); } }
   saved_g = g_machine;
   g_machine = cm;
   status = -1;
   if (!(rc = sigsetjmp(cm->onhalt, 1))) {
     cm->canhalt = true;
     LoadProgram(cm, prog, prog, argv, envp, 0);
+    { FILE *mk = fopen("/em.log", "a");
+      if (mk) { fprintf(mk, "loaded %s, running\n", prog); fclose(mk); } }
     Actor(cm);  // runs until the child halts (traps to onhalt) — never returns
   } else {
     // child halted; trapexit stored the code in cs->exited/exitcode
