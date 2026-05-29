@@ -1,5 +1,6 @@
 #include "blink/blinkenlib.h"
 
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -503,6 +504,56 @@ void *blinkenlib_vm_spawn(int withdebugger) {
   update_clstruct(m);
   return blinkenlib_vm_current();
 }
+
+// Run a VM on its OWN pthread (Web Worker under -pthread). The thread shares the
+// process memory/MEMFS/fds/g_socks with the main thread + other VM threads, so
+// an X server thread and an X client thread can talk over the in-process AF_UNIX
+// socket while EACH uses normal BLOCKING syscalls (its own thread blocks; real
+// preemptive scheduling interleaves them). The status is stored for the host to
+// read; trapexit makes the guest exit longjmp to this thread's sigsetjmp instead
+// of _exit()ing the whole process.
+extern void Actor(struct Machine *);
+struct EmThreadArg { struct Machine *m; struct System *s; };
+volatile int g_em_thread_status[8];   // by slot
+volatile int g_em_thread_done[8];
+
+static void *EmVmThread(void *argp) {
+  struct EmThreadArg *a = (struct EmThreadArg *)argp;
+  int slot = 0;  // single tracked slot (the client); the server runs untracked
+  int rc;
+  struct Machine *cm = a->m;
+  struct System *cs = a->s;
+  free(a);
+  g_machine = cm;
+  cm->thread = pthread_self();
+  cs->trapexit = true;
+  if (!(rc = sigsetjmp(cm->onhalt, 1))) {
+    cm->canhalt = true;
+    Actor(cm);  // runs until the guest halts (longjmp back here)
+  }
+  g_em_thread_status[slot] = (cs->exited ? cs->exitcode : 0);
+  g_em_thread_done[slot] = 1;
+  return 0;
+}
+
+// Launch the given VM handle on a new pthread. Returns 0 on success.
+EMSCRIPTEN_KEEPALIVE
+int blinkenlib_run_thread(void *handle) {
+  struct EmVm *h = (struct EmVm *)handle;
+  struct EmThreadArg *a = (struct EmThreadArg *)malloc(sizeof(*a));
+  pthread_t t;
+  a->m = h->m; a->s = h->s;
+  g_em_thread_done[0] = 0; g_em_thread_status[0] = 0;
+  if (pthread_create(&t, 0, EmVmThread, a) != 0) { free(a); return -1; }
+  pthread_detach(t);
+  return 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int blinkenlib_thread_done(void) { return g_em_thread_done[0]; }
+
+EMSCRIPTEN_KEEPALIVE
+int blinkenlib_thread_status(void) { return g_em_thread_status[0]; }
 
 EMSCRIPTEN_KEEPALIVE
 void blinkenlib_run_fast() {

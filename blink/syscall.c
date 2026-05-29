@@ -4803,11 +4803,6 @@ static i32 SysSelect(struct Machine *m, i32 nfds, i64 readfds_addr,
     timeoutp = 0;
     memset(&timeout, 0, sizeof(timeout));
   }
-#ifdef __EMSCRIPTEN__
-  // Cooperative scheduling: never block the single wasm thread in select() so
-  // concurrent VMs interleave. Force a zero (non-blocking) timeout.
-  { static struct timespec z; z.tv_sec = 0; z.tv_nsec = 0; timeoutp = &z; }
-#endif
   rc =
       Select(m, nfds, readfds_addr, writefds_addr, exceptfds_addr, timeoutp, 0);
 #ifndef DISABLE_NONPOSIX
@@ -4862,9 +4857,6 @@ static i32 SysPselect(struct Machine *m, i32 nfds, i64 readfds_addr,
   } else {
     sigmaskp = 0;
   }
-#ifdef __EMSCRIPTEN__
-  { static struct timespec z; z.tv_sec = 0; z.tv_nsec = 0; timeoutp = &z; }
-#endif
   rc = Select(m, nfds, readfds_addr, writefds_addr, exceptfds_addr, timeoutp,
               sigmaskp);
 #ifndef DISABLE_NONPOSIX
@@ -4968,22 +4960,12 @@ static int Poll(struct Machine *m, i64 fdsaddr, u64 nfds,
 
 static int SysPoll(struct Machine *m, i64 fdsaddr, u64 nfds, i32 timeout_ms) {
   struct timespec deadline;
-#ifdef __EMSCRIPTEN__
-  // Cooperative scheduling: never block the single wasm thread in poll() — a
-  // blocking poll freezes concurrent VMs (X server + client) so they can't
-  // interleave. Peek non-blocking; the guest loops + preempts, the scheduler
-  // runs the other VM, the next poll sees readiness.
-  (void)timeout_ms;
-  deadline = GetTime();
-  return Poll(m, fdsaddr, nfds, deadline);
-#else
   if (timeout_ms < 0) {
     deadline = GetMaxTime();
   } else {
     deadline = AddTime(GetTime(), FromMilliseconds(timeout_ms));
   }
   return Poll(m, fdsaddr, nfds, deadline);
-#endif
 }
 
 static int SysPpoll(struct Machine *m, i64 fdsaddr, u64 nfds, i64 timeoutaddr,
