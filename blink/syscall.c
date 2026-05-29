@@ -92,6 +92,9 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+#ifdef __EMSCRIPTEN_PTHREADS__
+#include <emscripten/threading.h>
+#endif
 #endif
 
 #ifdef __HAIKU__
@@ -160,9 +163,21 @@ static int SystemIoctl(int fd, unsigned long request, ...) {
 // back to the main loop. Yield regularly when the process waits for some
 // user input.
 
+// Yield while waiting. On the main runtime thread this must use ASYNCIFY's
+// emscripten_sleep (the browser event loop owns the thread). On a Web Worker
+// (a real pthread — how concurrent VMs run), emscripten_sleep is unavailable
+// (no ASYNCIFY in the -pthread build) and would abort; a real usleep blocks the
+// worker thread cooperatively without unwinding, which is correct there.
+static void em_yield(int ms) {
+#ifdef __EMSCRIPTEN_PTHREADS__
+  if (!emscripten_is_main_runtime_thread()) { usleep((useconds_t)ms * 1000); return; }
+#endif
+  emscripten_sleep(ms);
+}
+
 int em_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
   int ret = VfsPoll(fds, nfds, timeout);
-  if (ret == 0) emscripten_sleep(50);
+  if (ret == 0) em_yield(50);
   return ret;
 }
 
@@ -176,7 +191,7 @@ ssize_t em_readv(int fd, const struct iovec *iov, int iovcnt) {
     }
   }
   size_t ret = VfsReadv(fd, iov, iovcnt);
-  if (ret == -1 && errno == EAGAIN) emscripten_sleep(50);
+  if (ret == -1 && errno == EAGAIN) em_yield(50);
   return ret;
 }
 #endif
