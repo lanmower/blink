@@ -529,6 +529,10 @@ static void *EmVmThread(void *argp) {
   struct System *cs = a->s;
   free(a);
   g_machine = cm;
+  // m/s are thread-local; set this worker thread's pointers so blinkenlib
+  // helpers + the trapexit/clstruct paths operate on THIS VM (they were NULL on
+  // a freshly-created pthread, which crashed the guest before it could connect).
+  m = cm; s = cs;
   cm->thread = pthread_self();
   cs->trapexit = true;
   if (!(rc = sigsetjmp(cm->onhalt, 1))) {
