@@ -450,6 +450,51 @@ void setupProgram(bool withdebugger) {
 /* Exported api         */
 /* -------------------- */
 
+// ---- Concurrent VMs (e.g. X server + X client sharing the in-process MEMFS +
+// AF_UNIX socket registry) -------------------------------------------------
+// blinkenlib runs one (m,s) at a time, but the host can multiplex several
+// cooperatively: snapshot the current VM, set up/run another, and switch back.
+// A VM handle is just the (m,s) pair; the MEMFS and the unixsock/epoll shims are
+// process-global, so two VMs share files and can connect to each other's
+// sockets. The host pumps each VM's preempt slices (blinkenlib_preempt_resume)
+// and switches the active VM with blinkenlib_vm_set between slices.
+struct EmVm { struct Machine *m; struct System *s; };
+
+EMSCRIPTEN_KEEPALIVE
+void *blinkenlib_vm_current(void) {
+  struct EmVm *h = (struct EmVm *)malloc(sizeof(struct EmVm));
+  h->m = m; h->s = s;
+  return h;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void blinkenlib_vm_set(void *handle) {
+  struct EmVm *h = (struct EmVm *)handle;
+  m = h->m; s = h->s; g_machine = h->m;
+}
+
+// Set up a NEW program in a FRESH (m,s) WITHOUT tearing down the current VM, so
+// the caller can keep the previous VM alive concurrently. Returns a handle to
+// the new VM (already current). Uses the same progname_string/argc_string the
+// host wrote, mirroring setupProgram() minus TearDown().
+EMSCRIPTEN_KEEPALIVE
+void *blinkenlib_vm_spawn(int withdebugger) {
+  debugger_enabled = withdebugger;
+  printf("\n$ %s\n", argc_string);
+  char *args[ARGC_MAX_LINE_LEN];
+  char argc_string_copy[ARGC_MAX_LINE_LEN];
+  memcpy(argc_string_copy, argc_string, ARGC_MAX_LINE_LEN);
+  stringToArgsArray(argc_string_copy, args, ARGC_MAX_LINE_LEN);
+  char *vars = 0;
+  char *bios = 0;
+  // SetUp() allocates a fresh (m,s) into the globals without freeing the old.
+  SetUp();
+  LoadProgram(m, progname_string, progname_string, args, &vars, bios);
+  PostLoadSetup();
+  update_clstruct(m);
+  return blinkenlib_vm_current();
+}
+
 EMSCRIPTEN_KEEPALIVE
 void blinkenlib_run_fast() {
   setupProgram(false);
