@@ -2184,10 +2184,6 @@ static i64 SysSendmsg(struct Machine *m, i32 fildes, i64 msgaddr, i32 flags) {
 }
 
 static i64 SysRecvmsg(struct Machine *m, i32 fildes, i64 msgaddr, i32 flags) {
-#ifdef __EMSCRIPTEN__
-  if (fildes >= 9) { extern void blink_usmark(const char*); char b[48];
-    snprintf(b, sizeof(b), "SYS recvmsg(%d)", fildes); blink_usmark(b); }
-#endif
   ssize_t rc;
   u64 iovlen;
   i64 iovaddr;
@@ -2196,38 +2192,12 @@ static i64 SysRecvmsg(struct Machine *m, i32 fildes, i64 msgaddr, i32 flags) {
   bool norestart = false;
   struct msghdr_linux gm;
   struct sockaddr_storage addr;
-#ifdef __EMSCRIPTEN__
-  int rawflags = flags;
-#endif
-  if ((flags = XlatRecvFlags(flags)) == -1) {
-#ifdef __EMSCRIPTEN__
-    if (fildes >= 9) { extern void blink_usmark(const char*); char b[64];
-      snprintf(b, sizeof(b), "recvmsg(%d) BAD-FLAGS raw=0x%x", fildes, rawflags); blink_usmark(b); }
-#endif
-    return -1;
-  }
-  if (GetNoRestart(m, fildes, &norestart) == -1) {
-#ifdef __EMSCRIPTEN__
-    if (fildes >= 9) { extern void blink_usmark(const char*); char b[48];
-      snprintf(b, sizeof(b), "recvmsg(%d) NORESTART-FAIL", fildes); blink_usmark(b); }
-#endif
-    return -1;
-  }
-  if (CopyFromUserRead(m, &gm, msgaddr, sizeof(gm)) == -1) {
-#ifdef __EMSCRIPTEN__
-    if (fildes >= 9) { extern void blink_usmark(const char*); char b[48];
-      snprintf(b, sizeof(b), "recvmsg(%d) COPY-FAIL", fildes); blink_usmark(b); }
-#endif
-    return -1;
-  }
+  if ((flags = XlatRecvFlags(flags)) == -1) return -1;
+  if (GetNoRestart(m, fildes, &norestart) == -1) return -1;
+  if (CopyFromUserRead(m, &gm, msgaddr, sizeof(gm)) == -1) return -1;
   memset(&msg, 0, sizeof(msg));
   iovaddr = Read64(gm.iov);
   iovlen = Read64(gm.iovlen);
-#ifdef __EMSCRIPTEN__
-  if (fildes >= 9) { extern void blink_usmark(const char*); char b[80];
-    snprintf(b, sizeof(b), "recvmsg(%d) iovlen=%llu controllen=%llu", fildes,
-             (unsigned long long)iovlen, (unsigned long long)Read64(gm.controllen)); blink_usmark(b); }
-#endif
   if (!iovlen || iovlen > IOV_MAX_LINUX) {
     errno = EMSGSIZE;
     return -1;
@@ -2242,12 +2212,7 @@ static i64 SysRecvmsg(struct Machine *m, i32 fildes, i64 msgaddr, i32 flags) {
 #endif
   }
   InitIovs(&iv);
-  rc = AppendIovsGuest(m, &iv, iovaddr, iovlen, PROT_WRITE);
-#ifdef __EMSCRIPTEN__
-  if (fildes >= 9) { extern void blink_usmark(const char*); char b[64];
-    snprintf(b, sizeof(b), "recvmsg(%d) AppendIovs rc=%zd ivi=%d", fildes, (ssize_t)rc, iv.i); blink_usmark(b); }
-#endif
-  if (rc != -1) {
+  if ((rc = AppendIovsGuest(m, &iv, iovaddr, iovlen, PROT_WRITE)) != -1) {
     msg.msg_iov = iv.p;
     msg.msg_iovlen = iv.i;
     if (Read64(gm.name)) {
@@ -2255,17 +2220,7 @@ static i64 SysRecvmsg(struct Machine *m, i32 fildes, i64 msgaddr, i32 flags) {
       msg.msg_name = &addr;
       msg.msg_namelen = sizeof(addr);
     }
-#ifdef __EMSCRIPTEN__
-    if (fildes >= 9) { extern void blink_usmark(const char*); char b[96];
-      snprintf(b, sizeof(b), "recvmsg(%d) PRE-VFS iovlen=%llu controllen=%llu flags=%d",
-               fildes, (unsigned long long)iovlen,
-               (unsigned long long)Read64(gm.controllen), flags); blink_usmark(b); }
-#endif
     INTERRUPTIBLE(!norestart, rc = VfsRecvmsg(fildes, &msg, flags));
-#ifdef __EMSCRIPTEN__
-    if (fildes >= 9) { extern void blink_usmark(const char*); char b[64];
-      snprintf(b, sizeof(b), "recvmsg(%d) POST-VFS rc=%zd", fildes, (ssize_t)rc); blink_usmark(b); }
-#endif
     if (rc != -1) {
       Write32(gm.flags, UnXlatMsgFlags(msg.msg_flags));
       unassert(CopyToUserWrite(m, msgaddr, &gm, sizeof(gm)) != -1);
@@ -2590,10 +2545,6 @@ static i64 SysRead(struct Machine *m, i32 fildes, i64 addr, u64 size) {
   i64 rc;
   int oflags;
   struct Fd *fd;
-#ifdef __EMSCRIPTEN__
-  if (fildes >= 9) { extern void blink_usmark(const char*); char b[48];
-    snprintf(b, sizeof(b), "SYS read(%d) sz=%llu", fildes, (unsigned long long)size); blink_usmark(b); }
-#endif
   struct Iovs iv;
   ssize_t (*readv_impl)(int, const struct iovec *, int);
   if (size > NUMERIC_MAX(size_t)) return eoverflow();
@@ -2819,10 +2770,6 @@ static i64 SysPwritev2(struct Machine *m, i32 fildes, i64 iovaddr, u32 iovlen,
 }
 
 static i64 SysReadv(struct Machine *m, i32 fildes, i64 iovaddr, u32 iovlen) {
-#ifdef __EMSCRIPTEN__
-  if (fildes >= 9) { extern void blink_usmark(const char*); char b[48];
-    snprintf(b, sizeof(b), "SYS readv(%d)", fildes); blink_usmark(b); }
-#endif
   return SysPreadv2(m, fildes, iovaddr, iovlen, -1, 0);
 }
 
@@ -4767,18 +4714,6 @@ static i32 Select(struct Machine *m,          //
   FD_ZERO(&readyreadfds);
   FD_ZERO(&readywritefds);
   FD_ZERO(&readyexceptfds);
-#ifdef __EMSCRIPTEN__
-  { static int sc = 0;
-    if (sc < 12) { sc++;
-      char line[160]; int o = 0;
-      o += snprintf(line + o, sizeof(line) - o, "SELECT nfds=%d r={", nfds);
-      for (int z = 0; z < nfds && o < 120; z++)
-        if (FD_ISSET(z, &readfds)) o += snprintf(line + o, sizeof(line) - o, "%d ", z);
-      snprintf(line + o, sizeof(line) - o, "}");
-      FILE *mk = fopen("/em-unixsock.log", "a");
-      if (mk) { fputs(line, mk); fputc('\n', mk); fclose(mk); }
-    } }
-#endif
   if (sigmaskp_guest) {
     oldmask_guest = m->sigmask;
     m->sigmask = *sigmaskp_guest;
@@ -4995,19 +4930,6 @@ static int Poll(struct Machine *m, i64 fdsaddr, u64 nfds,
     if ((gfds = (struct pollfd_linux *)AddToFreeList(m, malloc(gfdssize)))) {
       rc = 0;
       CopyFromUserRead(m, gfds, fdsaddr, gfdssize);
-#ifdef __EMSCRIPTEN__
-      { static int pmc = 0;
-        if (pmc < 12) { pmc++;
-          char line[160]; int o = 0;
-          o += snprintf(line + o, sizeof(line) - o, "POLL nfds=%llu fds={",
-                        (unsigned long long)nfds);
-          for (u64 z = 0; z < nfds && o < 120; z++)
-            o += snprintf(line + o, sizeof(line) - o, "%d ", Read32(gfds[z].fd));
-          snprintf(line + o, sizeof(line) - o, "}");
-          FILE *mk = fopen("/em-unixsock.log", "a");
-          if (mk) { fputs(line, mk); fputc('\n', mk); fclose(mk); }
-        } }
-#endif
       for (;;) {
         for (i = 0; i < nfds; ++i) {
         TryAgain:
@@ -5884,12 +5806,6 @@ void OpSyscall(P) {
   r0 = Get64(m->r10);
   r8 = Get64(m->r8);
   r9 = Get64(m->r9);
-#ifdef __EMSCRIPTEN__
-  { extern _Thread_local int g_blink_unixsock_vmid; extern void blink_usmark(const char*);
-    extern int g_blink_log_svr_sys;  // set 1 once a client is accepted (post-handshake window)
-    if (g_blink_unixsock_vmid == 1 && g_blink_log_svr_sys) { char b[48];
-      snprintf(b, sizeof(b), "SVR sys 0x%llx", (unsigned long long)(ax & 0xfff)); blink_usmark(b); } }
-#endif
   switch (ax & 0xfff) {
     SYSCALL(3, 0x000, "read", SysRead, STRACE_READ);
     SYSCALL(3, 0x001, "write", SysWrite, STRACE_WRITE);

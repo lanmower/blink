@@ -348,11 +348,7 @@ void SetUp(void) {
   {
     extern int FLAG_strace;
     const char *st = getenv("BLINK_STRACE");
-    if (st && *st) {
-      extern void LogInit(const char *);
-      FLAG_strace = atoi(st);
-      LogInit("/em-strace.log");  // MEMFS: cross-thread coherent, host-readable
-    }
+    if (st && *st) FLAG_strace = atoi(st);
   }
 #endif
   InitMap();
@@ -515,10 +511,6 @@ void *blinkenlib_vm_spawn(int withdebugger) {
   // Assign this VM a distinct id so its unix-socket entries are isolated from
   // the other concurrent VM's (close() is VM-scoped).
   g_blink_unixsock_vmid = ++g_em_next_vmid;
-  if (g_blink_unixsock_vmid == 1) {  // TEMP: full syscall trace of the server
-    extern int FLAG_strace; extern void LogInit(const char *);
-    FLAG_strace = 5; LogInit("/em-strace.log");
-  }
   LoadProgram(m, progname_string, progname_string, args, &vars, bios);
   PostLoadSetup();
   update_clstruct(m);
@@ -555,10 +547,6 @@ static void *EmVmThread(void *argp) {
   // main thread left in the (now thread-local) global after spawning.
   g_blink_unixsock_vmid = cvmid;
   g_em_on_worker = 1;  // suppress main-thread JS callbacks from this thread
-  // Marker in shared MEMFS (cross-thread coherent, unlike the stdout callbacks)
-  // so the host can confirm THIS thread actually started running its guest.
-  { char p[32]; snprintf(p, sizeof(p), "/em-thr-%d.run", slot);
-    FILE *mk = fopen(p, "w"); if (mk) { fputs("started\n", mk); fclose(mk); } }
   cm->thread = pthread_self();
   cs->trapexit = true;
   // Full Blink()-style run loop: a bare `Actor()` under a single sigsetjmp only

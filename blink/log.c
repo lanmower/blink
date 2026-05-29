@@ -143,19 +143,7 @@ static void Log(const char *file, int line, const char *fmt, va_list va,
     b[n - 4] = '.';
   }
   if (g_log.fd != -1) {
-#ifdef __EMSCRIPTEN__
-    // A persistent fd opened on the main thread does not flush coherently to a
-    // MEMFS node from worker threads; reopen per write so worker-thread (X
-    // server VM) syscall traces actually land in the file. TEMP diagnostic.
-    if (g_log.path) {
-      FILE *lf = fopen(g_log.path, "a");
-      if (lf) { fwrite(b, 1, (size_t)n, lf); fclose(lf); }
-    } else {
-      WriteError(g_log.fd, b, n);
-    }
-#else
     WriteError(g_log.fd, b, n);
-#endif
   }
   if (FLAG_alsologtostderr || (!FLAG_nologstderr && level <= g_log.level)) {
     WriteError(2, b, n);

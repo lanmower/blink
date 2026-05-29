@@ -72,9 +72,6 @@ int epoll_ctl(int epfd, int op, int fd, struct epoll_event *ev) {
       if (e->w[j].fd == fd) { found = j; break; }
       if (e->w[j].fd == -1 && free_slot < 0) free_slot = j;
     }
-    { extern void blink_usmark(const char*); char b[64];
-      snprintf(b, sizeof(b), "epoll_ctl %s fd=%d events=0x%x",
-               op==EPOLL_CTL_ADD?"ADD":"MOD", fd, ev->events); blink_usmark(b); }
     if (op == EPOLL_CTL_ADD) {
       if (found >= 0) { errno = EEXIST; return -1; }
       if (free_slot < 0) { errno = ENOSPC; return -1; }
@@ -88,8 +85,6 @@ int epoll_ctl(int epfd, int op, int fd, struct epoll_event *ev) {
     }
     return 0;
   } else if (op == EPOLL_CTL_DEL) {
-    { extern void blink_usmark(const char*); char b[48];
-      snprintf(b, sizeof(b), "epoll_ctl DEL fd=%d", fd); blink_usmark(b); }
     for (int j = 0; j < EPOLL_MAX_WATCHES; j++)
       if (e->w[j].fd == fd) { e->w[j].fd = -1; return 0; }
     errno = ENOENT;
@@ -131,11 +126,7 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents,
     // Connected in-process endpoints carry data in shared rings, invisible to
     // the host pipe poll; surface ring readiness here too so the X server wakes
     // to read its clients.
-    if (blink_unix_conn_readable(pfds[k].fd) == 1) {
-      pfds[k].revents |= POLLIN;
-      { extern void blink_usmark(const char*); char b[64];
-        snprintf(b, sizeof(b), "epoll conn-ready fd=%d", pfds[k].fd); blink_usmark(b); }
-    }
+    if (blink_unix_conn_readable(pfds[k].fd) == 1) pfds[k].revents |= POLLIN;
   }
   int presynth = 0;
   for (int k = 0; k < n; k++) if (pfds[k].revents) presynth = 1;
@@ -165,12 +156,6 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents,
     if (pfds[k].revents & POLLRDHUP) ev |= EPOLLRDHUP;
     events[out].events = ev & (e->w[idx[k]].events | EPOLLERR | EPOLLHUP);
     events[out].data = e->w[idx[k]].data;
-    if (blink_unix_conn_readable(pfds[k].fd) >= 0) {
-      extern void blink_usmark(const char*); char b[96];
-      snprintf(b, sizeof(b), "epoll_wait RET fd=%d revents=0x%x out_events=0x%x watch=0x%x",
-               pfds[k].fd, (unsigned)pfds[k].revents, events[out].events,
-               e->w[idx[k]].events); blink_usmark(b);
-    }
     out++;
   }
   return out;

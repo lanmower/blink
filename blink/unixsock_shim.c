@@ -13,34 +13,9 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-// Trace the in-process unix layer to the guest's stderr (temporary, unconditional
-// — emscripten getenv reads the Module ENV not the host env, so gating is dead).
-#define USDBG(...)                                  \
-  do {                                              \
-    fprintf(stderr, "[unixsock] " __VA_ARGS__);     \
-    fputc('\n', stderr);                            \
-    fflush(stderr);                                 \
-  } while (0)
-
-// Append a line to a fixed MEMFS marker file (cross-thread coherent, unlike the
-// per-thread emscripten stdout callbacks) so the host can observe the X-client
-// handshake events from a worker thread.
-static void USMARK(const char *line) {
-  FILE *mk = fopen("/em-unixsock.log", "a");
-  if (mk) { fputs(line, mk); fputc('\n', mk); fclose(mk); }
-}
-// Public alias so other shims (epoll) can append to the same marker log. Also
-// echo to stderr+flush so the last lines survive a fatal worker crash (the
-// MEMFS log is only dumped at end-of-run, which a crash skips). TEMP.
-void blink_usmark(const char *line) {
-  USMARK(line);
-  fprintf(stderr, "USMK %s\n", line);
-  fflush(stderr);
-}
-
-// Set to 1 after a client is accepted, to open the post-handshake syscall-trace
-// window in OpSyscall (TEMP diagnostic for the table-index trap).
-int g_blink_log_svr_sys = 0;
+// Optional in-process unix layer trace (compiled out by default).
+#define USDBG(...) ((void)0)
+#define USMARK(line) ((void)(line))
 
 // Track which fds we created as in-process AF_UNIX sockets, and the listener /
 // connection state for each. Single-threaded-enough for blink's emscripten
@@ -222,32 +197,8 @@ static struct UnixSock *FindListenerByPath(const char *path) {
 int blink_unix_listener_readable(int fd) {
   for (int i = 0; i < UNIX_MAX_SOCKS; i++)
     if (g_socks[i].state == UNIX_LISTENING && g_socks[i].fd == fd &&
-        g_socks[i].vmid == g_blink_unixsock_vmid) {
-      if (g_socks[i].npending > 0) {
-        char b[120];
-        snprintf(b, sizeof(b), "listener_readable HIT fd=%d vmid=%d npending=%d",
-                 fd, g_blink_unixsock_vmid, g_socks[i].npending);
-        USMARK(b);
-      }
+        g_socks[i].vmid == g_blink_unixsock_vmid)
       return g_socks[i].npending > 0 ? 1 : 0;
-    }
-  // Not matched as a listener in THIS vm. Log once-ish what listeners exist so we
-  // can tell whether the poll fd, the vmid, or the registry visibility is wrong.
-  {
-    static int dumped = 0;
-    if (!dumped) {
-      dumped = 1;
-      char b[160];
-      for (int i = 0; i < UNIX_MAX_SOCKS; i++)
-        if (g_socks[i].state == UNIX_LISTENING) {
-          snprintf(b, sizeof(b),
-                   "listener_readable MISS qfd=%d qvmid=%d | LISTENER fd=%d vmid=%d path=%s npending=%d",
-                   fd, g_blink_unixsock_vmid, g_socks[i].fd, g_socks[i].vmid,
-                   g_socks[i].path, g_socks[i].npending);
-          USMARK(b);
-        }
-    }
-  }
   return -1;
 }
 
@@ -320,11 +271,6 @@ int blink_unix_listen(int fd, int backlog) {
   (void)backlog;
   if (!s->bound) { errno = EINVAL; return -1; }  // must bind() first
   s->state = UNIX_LISTENING;
-  {
-    int n = 0;
-    for (int i = 0; i < UNIX_MAX_SOCKS; i++) if (g_socks[i].state != UNIX_FREE) n++;
-    USDBG("listen OK vmid=%d total-live-entries=%d &g_socks=%p", g_blink_unixsock_vmid, n, (void*)g_socks);
-  }
   return 0;
 }
 
@@ -333,22 +279,8 @@ int blink_unix_connect(int fd, const struct sockaddr *addr, socklen_t len) {
   if (!s) return connect(fd, addr, len);
   char key[UNIX_PATH_MAX];
   if (UnixKey(addr, len, key) != 0) { errno = EINVAL; return -1; }
-  USDBG("connect path='%s'", key);
-  { char b[160]; snprintf(b, sizeof(b), "connect vmid=%d path=%s", g_blink_unixsock_vmid, key); USMARK(b); }
   struct UnixSock *l = FindListenerByPath(key);
-  USMARK(l ? "connect: listener FOUND" : "connect: listener NOT FOUND (refused)");
-  if (!l) {
-    int n = 0;
-    for (int i = 0; i < UNIX_MAX_SOCKS; i++) if (g_socks[i].state != UNIX_FREE) n++;
-    USDBG("connect-refused vmid=%d total-live-entries=%d &g_socks=%p", g_blink_unixsock_vmid, n, (void*)g_socks);
-    // Dump the registry so we can see whether the server's listener is visible
-    // here (shared g_socks across VMs) or not.
-    for (int di = 0; di < UNIX_MAX_SOCKS; di++)
-      if (g_socks[di].state != UNIX_FREE)
-        USDBG("  registry[%d] state=%d fd=%d path='%s'", di,
-              (int)g_socks[di].state, g_socks[di].fd, g_socks[di].path);
-    errno = ECONNREFUSED; return -1;
-  }
+  if (!l) { errno = ECONNREFUSED; return -1; }
   if (l->npending >= UNIX_MAX_BACKLOG) { errno = EAGAIN; return -1; }
   // Allocate a shared connection (two byte rings) for this client/server pair.
   // socketpair() is unsupported on the emscripten host, so the rings ARE the
@@ -378,9 +310,6 @@ int blink_unix_connect(int fd, const struct sockaddr *addr, socklen_t len) {
 
 int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len) {
   struct UnixSock *s = FindByFd(fd);
-  { char b[120]; snprintf(b, sizeof(b), "accept fd=%d vmid=%d tracked=%d npending=%d", fd, g_blink_unixsock_vmid, s?1:0, s?s->npending:-1); USMARK(b); }
-  USDBG("accept(fd=%d) vmid=%d tracked=%d npending=%d", fd,
-        g_blink_unixsock_vmid, s ? 1 : 0, s ? s->npending : -1);
   if (!s) return accept(fd, addr, len);
   if (s->state != UNIX_LISTENING) { errno = EINVAL; return -1; }
   if (s->npending == 0) { errno = EAGAIN; return -1; }  // nonblocking: nothing yet
@@ -401,7 +330,6 @@ int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len) {
   cb->fd = pp[0]; cb->vmid = g_blink_unixsock_vmid; cb->wake_wr = pp[1];
   cb->conn = conn; cb->side = 1;
   strncpy(cb->path, s->path, UNIX_PATH_MAX - 1); cb->path[UNIX_PATH_MAX - 1] = 0;
-  USDBG("accept -> endpoint-B fd=%d vmid=%d", pp[0], g_blink_unixsock_vmid);
   // Drain one readiness byte (written by connect) so the listener fd's poll
   // level matches the remaining queue depth.
   { char b; (void)read(s->fd, &b, 1); }
@@ -412,8 +340,6 @@ int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len) {
       *len = sizeof(sa_family_t);
     }
   }
-  { char b[64]; snprintf(b, sizeof(b), "accept RETURN fd=%d", cb->fd); USMARK(b); }
-  { extern int g_blink_log_svr_sys; g_blink_log_svr_sys = 1; }
   return cb->fd;  // connected endpoint, data via shared rings
 }
 
@@ -522,9 +448,6 @@ ssize_t blink_unix_readv(int fd, const struct iovec *iov, int iovcnt) {
   struct UnixConnFd *c = FindConnFd(fd);
   if (!c) return readv(fd, iov, iovcnt);
   struct UnixRing *r = ConnInRing(c);
-  { static int rc2 = 0; if (rc2 < 20) { rc2++; char b[96];
-    snprintf(b, sizeof(b), "readv ENTER fd=%d side=%d vmid=%d used=%u peeropen=%d",
-             fd, c->side, g_blink_unixsock_vmid, RingUsed(r), ConnPeerOpen(c)); USMARK(b); } }
   if (RingUsed(r) == 0) {
     if (!ConnPeerOpen(c)) return 0;  // EOF
     errno = EAGAIN;                  // nonblocking: caller polls + retries
@@ -536,10 +459,6 @@ ssize_t blink_unix_readv(int fd, const struct iovec *iov, int iovcnt) {
     total += (ssize_t)got;
     if (got < iov[i].iov_len) break;
   }
-  { char b[120];
-    const unsigned char *d0 = (const unsigned char *)iov[0].iov_base;
-    snprintf(b, sizeof(b), "readv fd=%d side=%d got=%zd bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
-             fd, c->side, total, d0[0],d0[1],d0[2],d0[3],d0[4],d0[5],d0[6],d0[7],d0[8],d0[9],d0[10],d0[11]); USMARK(b); }
   return total;
 }
 
@@ -557,7 +476,6 @@ ssize_t blink_unix_writev(int fd, const struct iovec *iov, int iovcnt) {
     if (w < iov[i].iov_len) break;
   }
   if (total == 0) { errno = EAGAIN; return -1; }
-  { char b[80]; snprintf(b, sizeof(b), "writev fd=%d side=%d put=%zd", fd, c->side, total); USMARK(b); }
   return total;
 }
 
@@ -590,17 +508,11 @@ int blink_unix_poll(struct pollfd *fds, unsigned long nfds, int timeout) {
     fds[i].revents = 0;
     int lr = blink_unix_listener_readable(fds[i].fd);
     if (lr >= 0) {
-      static int lpc = 0;
-      if (lpc < 8) { lpc++; char b[80];
-        snprintf(b, sizeof(b), "poll listener fd=%d vmid=%d lr=%d", fds[i].fd, g_blink_unixsock_vmid, lr); USMARK(b); }
-      if (lr == 1 && (fds[i].events & POLLIN)) { fds[i].revents |= POLLIN; ready++; } continue;
+      if (lr == 1 && (fds[i].events & POLLIN)) { fds[i].revents |= POLLIN; ready++; }
+      continue;
     }
     int cr = blink_unix_conn_readable(fds[i].fd);
     if (cr >= 0) {
-      static int pc = 0;
-      if (pc < 30) { pc++; char b[96];
-        snprintf(b, sizeof(b), "poll conn fd=%d vmid=%d ev=%d cr=%d", fds[i].fd,
-                 g_blink_unixsock_vmid, fds[i].events, cr); USMARK(b); }
       if (cr == 1 && (fds[i].events & POLLIN)) { fds[i].revents |= POLLIN; ready++; }
       if (fds[i].events & POLLOUT) { fds[i].revents |= POLLOUT; ready++; }  // ring rarely full
       continue;
@@ -648,7 +560,6 @@ int blink_unix_getpeername(int fd, struct sockaddr *addr, socklen_t *len) {
 int blink_unix_close(int fd) {
   struct UnixConnFd *c = FindConnFd(fd);
   if (c) {
-    { char b[80]; snprintf(b, sizeof(b), "close conn fd=%d side=%d vmid=%d", fd, c->side, g_blink_unixsock_vmid); USMARK(b); }
     // Mark this endpoint closed so the peer sees EOF; free the conn at refs 0.
     if (c->side == 0) c->conn->a_open = 0; else c->conn->b_open = 0;
     if (--c->conn->refs <= 0) free(c->conn);
