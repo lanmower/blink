@@ -507,12 +507,6 @@ void *blinkenlib_vm_spawn(int withdebugger) {
   // Assign this VM a distinct id so its unix-socket entries are isolated from
   // the other concurrent VM's (close() is VM-scoped).
   g_blink_unixsock_vmid = ++g_em_next_vmid;
-  // TEMP DIAG: force-trace the SERVER VM (id 1) to MEMFS so we can see why dix
-  // closes the accepted client without reading it.
-  if (g_blink_unixsock_vmid == 1) {
-    extern int FLAG_strace; extern void LogInit(const char *);
-    FLAG_strace = 2; LogInit("/em-strace.log");
-  }
   LoadProgram(m, progname_string, progname_string, args, &vars, bios);
   PostLoadSetup();
   update_clstruct(m);

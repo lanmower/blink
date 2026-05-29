@@ -100,6 +100,7 @@ struct UnixConnFd {
   int wake_wr;             // backing pipe write end (parked; never written)
   struct UnixConn *conn;   // shared connection
   int side;                // 0 = side A, 1 = side B
+  char path[UNIX_PATH_MAX];// the listener path this connection targets
 };
 static struct UnixConnFd g_connfds[UNIX_MAX_CONNFDS];
 
@@ -351,6 +352,7 @@ int blink_unix_connect(int fd, const struct sockaddr *addr, socklen_t len) {
   if (!ca) { free(conn); errno = EMFILE; return -1; }
   ca->fd = fd; ca->vmid = g_blink_unixsock_vmid; ca->wake_wr = s->wake_wr;
   ca->conn = conn; ca->side = 0;
+  strncpy(ca->path, key, UNIX_PATH_MAX - 1); ca->path[UNIX_PATH_MAX - 1] = 0;
   // The client socket entry is now a connected endpoint tracked in g_connfds;
   // release its listener-table slot (keep the pipe fd alive via ca->wake_wr).
   s->wake_wr = -1; s->state = UNIX_FREE; s->fd = -1;
@@ -388,6 +390,7 @@ int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len) {
   if (!cb) { close(pp[0]); close(pp[1]); conn->b_open = 0; errno = EMFILE; return -1; }
   cb->fd = pp[0]; cb->vmid = g_blink_unixsock_vmid; cb->wake_wr = pp[1];
   cb->conn = conn; cb->side = 1;
+  strncpy(cb->path, s->path, UNIX_PATH_MAX - 1); cb->path[UNIX_PATH_MAX - 1] = 0;
   USDBG("accept -> endpoint-B fd=%d vmid=%d", pp[0], g_blink_unixsock_vmid);
   // Drain one readiness byte (written by connect) so the listener fd's poll
   // level matches the remaining queue depth.
@@ -429,17 +432,37 @@ int blink_unix_getsockopt(int fd, int level, int optname, void *optval,
   return getsockopt(fd, level, optname, optval, optlen);
 }
 
+// Write a sockaddr_un for `key` (our '@'-prefixed-abstract or filesystem path)
+// into addr/len, clamped to the caller's buffer. Returns 0.
+static int FillUnixAddr(const char *key, struct sockaddr *addr, socklen_t *len) {
+  if (!addr || !len) return 0;
+  struct sockaddr_un un;
+  memset(&un, 0, sizeof(un));
+  un.sun_family = AF_UNIX;
+  socklen_t n;
+  if (key && key[0] == '@') {  // abstract: leading NUL + bytes
+    size_t plen = strlen(key) - 1;
+    if (plen > sizeof(un.sun_path) - 1) plen = sizeof(un.sun_path) - 1;
+    un.sun_path[0] = '\0';
+    memcpy(un.sun_path + 1, key + 1, plen);
+    n = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + plen);
+  } else if (key && key[0]) {  // filesystem path
+    strncpy(un.sun_path, key, sizeof(un.sun_path) - 1);
+    n = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + strlen(un.sun_path) + 1);
+  } else {  // unnamed
+    n = (socklen_t)offsetof(struct sockaddr_un, sun_path);
+  }
+  if (n > *len) n = *len;
+  memcpy(addr, &un, n);
+  *len = n;
+  return 0;
+}
+
 int blink_unix_getsockname(int fd, struct sockaddr *addr, socklen_t *len) {
   struct UnixSock *s = FindByFd(fd);
   struct UnixConnFd *c = s ? 0 : FindConnFd(fd);
   if (!s && !c) return getsockname(fd, addr, len);
-  if (c) {  // connected endpoint: report a unix family with an empty path
-    if (addr && len && *len >= (socklen_t)sizeof(sa_family_t)) {
-      addr->sa_family = AF_UNIX;
-      *len = sizeof(sa_family_t);
-    }
-    return 0;
-  }
+  if (c) return FillUnixAddr(c->path, addr, len);
   if (addr && len) {
     struct sockaddr_un un;
     memset(&un, 0, sizeof(un));
@@ -579,16 +602,9 @@ int blink_unix_poll(struct pollfd *fds, unsigned long nfds, int timeout) {
 }
 
 int blink_unix_getpeername(int fd, struct sockaddr *addr, socklen_t *len) {
-  if (FindConnFd(fd)) { char b[64]; snprintf(b, sizeof(b), "getpeername conn fd=%d vmid=%d", fd, g_blink_unixsock_vmid); USMARK(b); }
-  if (FindByFd(fd) || FindConnFd(fd)) {
-    // In-process unix peer: report AF_UNIX with an empty path. Xtrans uses this
-    // only for local access control, which our loopback layer always permits.
-    if (addr && len && *len >= (socklen_t)sizeof(sa_family_t)) {
-      addr->sa_family = AF_UNIX;
-      *len = sizeof(sa_family_t);
-    }
-    return 0;
-  }
+  struct UnixConnFd *c = FindConnFd(fd);
+  if (c) return FillUnixAddr(c->path, addr, len);
+  if (FindByFd(fd)) return FillUnixAddr("", addr, len);
   return getpeername(fd, addr, len);
 }
 
