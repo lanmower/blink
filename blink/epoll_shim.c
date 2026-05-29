@@ -72,6 +72,9 @@ int epoll_ctl(int epfd, int op, int fd, struct epoll_event *ev) {
       if (e->w[j].fd == fd) { found = j; break; }
       if (e->w[j].fd == -1 && free_slot < 0) free_slot = j;
     }
+    { extern void blink_usmark(const char*); char b[64];
+      snprintf(b, sizeof(b), "epoll_ctl %s fd=%d events=0x%x",
+               op==EPOLL_CTL_ADD?"ADD":"MOD", fd, ev->events); blink_usmark(b); }
     if (op == EPOLL_CTL_ADD) {
       if (found >= 0) { errno = EEXIST; return -1; }
       if (free_slot < 0) { errno = ENOSPC; return -1; }
@@ -85,6 +88,8 @@ int epoll_ctl(int epfd, int op, int fd, struct epoll_event *ev) {
     }
     return 0;
   } else if (op == EPOLL_CTL_DEL) {
+    { extern void blink_usmark(const char*); char b[48];
+      snprintf(b, sizeof(b), "epoll_ctl DEL fd=%d", fd); blink_usmark(b); }
     for (int j = 0; j < EPOLL_MAX_WATCHES; j++)
       if (e->w[j].fd == fd) { e->w[j].fd = -1; return 0; }
     errno = ENOENT;
