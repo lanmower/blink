@@ -2242,7 +2242,12 @@ static i64 SysRecvmsg(struct Machine *m, i32 fildes, i64 msgaddr, i32 flags) {
 #endif
   }
   InitIovs(&iv);
-  if ((rc = AppendIovsGuest(m, &iv, iovaddr, iovlen, PROT_WRITE)) != -1) {
+  rc = AppendIovsGuest(m, &iv, iovaddr, iovlen, PROT_WRITE);
+#ifdef __EMSCRIPTEN__
+  if (fildes >= 9) { extern void blink_usmark(const char*); char b[64];
+    snprintf(b, sizeof(b), "recvmsg(%d) AppendIovs rc=%zd ivi=%d", fildes, (ssize_t)rc, iv.i); blink_usmark(b); }
+#endif
+  if (rc != -1) {
     msg.msg_iov = iv.p;
     msg.msg_iovlen = iv.i;
     if (Read64(gm.name)) {
