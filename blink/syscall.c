@@ -605,8 +605,6 @@ static int SysFork(struct Machine *m) {
   // and run the in-VM vfork-exec model for subsequent forks.
   {
     static int em_fork_seen = 0;
-    FILE *mk = fopen("/tmp/blink-fork-fired", "a");
-    if (mk) { fprintf(mk, "SysFork #%d active=%d\n", em_fork_seen, g_em_fork.active); fclose(mk); }
     if (em_fork_seen++ == 0) { errno = ENOSYS; return -1; }  // startup daemonize fork
   }
   {
@@ -749,12 +747,6 @@ static int SysClone(struct Machine *m, u64 flags, u64 stack, u64 ptid, u64 ctid,
   fprintf(stderr, "[forkexec] SysClone flags=0x%llx isfork=%d\n",
           (unsigned long long)flags, (int)IsForkOrVfork(flags));
   fflush(stderr);
-  // Host-FS marker the CI step can stat after the run (survives any guest
-  // stderr swallowing / abnormal exit): proves SysClone was dispatched.
-  { FILE *mk = fopen("/tmp/blink-clone-fired", "a");
-    if (mk) { fprintf(mk, "clone flags=0x%llx isfork=%d\n",
-                       (unsigned long long)flags, (int)IsForkOrVfork(flags));
-              fclose(mk); } }
 #endif
   if (IsForkOrVfork(flags)) {
 #ifdef __EMSCRIPTEN__
