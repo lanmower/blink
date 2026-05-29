@@ -597,14 +597,32 @@ static int SysFork(struct Machine *m) {
   // there is no second control flow — we fall through returning 0 once, which
   // matches a child that simply runs the post-fork code in-line; for the X
   // server / Popen case the child always execs immediately.
-  { FILE *mk = fopen("/tmp/blink-fork-fired", "a");
-    if (mk) { fprintf(mk, "SysFork active=%d\n", g_em_fork.active); fclose(mk); } }
-  // DIAGNOSTIC: behave as if fork() is unavailable, to confirm whether Xvfb's
-  // single startup fork is essential. If Xvfb still reaches the keymap step
-  // with fork=ENOSYS, the startup fork is optional and only Popen's exec-fork
-  // matters (which we then handle separately). Revert after the data point.
-  errno = ENOSYS;
-  return -1;
+  // Each fork RE-ARMS (overwrites any prior snapshot) rather than blocking when
+  // a prior fork never exec'd. Xvfb's startup daemonize-fork returns 0 (child
+  // continues; the would-be parent that exits is simply dropped, which is the
+  // correct single-process daemonize result) and leaves the snapshot armed but
+  // harmless; the later Popen(xkbcomp) fork re-arms and IS followed by execve,
+  // which runs the child inline and longjmps back here to hand the parent the
+  // child pid. (Proven: with fork=ENOSYS Xvfb still reaches the keymap, so the
+  // startup fork is optional; returning 0 is at least as good and keeps the
+  // exec-fork path available.)
+  {
+    int rc = sigsetjmp(g_em_fork.jb, 1);
+    if (rc == 0) {
+      memcpy(g_em_fork.beg, m->beg, sizeof(g_em_fork.beg));
+      g_em_fork.ip = m->ip;
+      g_em_fork.flags = m->flags;
+      g_em_fork.active = true;
+      return 0;  // guest enters the child branch
+    } else {
+      // returned from the child's execve via siglongjmp; restore parent regs
+      memcpy(m->beg, g_em_fork.beg, sizeof(m->beg));
+      m->ip = g_em_fork.ip;
+      m->flags = g_em_fork.flags;
+      g_em_fork.active = false;
+      return g_em_fork.child_pid;  // parent sees the child pid
+    }
+  }
 #else
   return Fork(m, 0, 0, 0);
 #endif
