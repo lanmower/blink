@@ -527,12 +527,17 @@ static void *EmVmThread(void *argp) {
   int rc;
   struct Machine *cm = a->m;
   struct System *cs = a->s;
+  int cvmid = a->vmid;
   free(a);
   g_machine = cm;
   // m/s are thread-local; set this worker thread's pointers so blinkenlib
   // helpers + the trapexit/clstruct paths operate on THIS VM (they were NULL on
   // a freshly-created pthread, which crashed the guest before it could connect).
   m = cm; s = cs;
+  // Per-thread current-vmid for the in-process unix layer: the listener-readable
+  // and close VM-scoping checks must use THIS thread's VM, not whatever vmid the
+  // main thread left in the (now thread-local) global after spawning.
+  g_blink_unixsock_vmid = cvmid;
   // Marker in shared MEMFS (cross-thread coherent, unlike the stdout callbacks)
   // so the host can confirm THIS thread actually started running its guest.
   { char p[32]; snprintf(p, sizeof(p), "/em-thr-%d.run", slot);
@@ -554,7 +559,7 @@ int blinkenlib_run_thread_slot(void *handle, int slot) {
   struct EmVm *h = (struct EmVm *)handle;
   struct EmThreadArg *a = (struct EmThreadArg *)malloc(sizeof(*a));
   pthread_t t;
-  a->m = h->m; a->s = h->s; a->slot = slot;
+  a->m = h->m; a->s = h->s; a->slot = slot; a->vmid = h->vmid;
   g_em_thread_done[slot & 7] = 0; g_em_thread_status[slot & 7] = 0;
   if (pthread_create(&t, 0, EmVmThread, a) != 0) { free(a); return -1; }
   pthread_detach(t);
