@@ -880,17 +880,6 @@ i64 ReserveVirtual(struct System *s, i64 virt, i64 size, u64 flags, int fd,
     }
   }
 
-#ifdef __EMSCRIPTEN__
-  // Diagnostic: surface any large guest reservation so we can see whether the
-  // ~4GB X-server allocation is a single mmap (reservable lazily) or fault-time
-  // backing, and with which flags. Unconditional stderr (LOGF may compile out).
-  if (size >= (i64)256 * 1024 * 1024) {
-    fprintf(stderr,
-            "BIGRSRV size=0x%llx virt=0x%llx fd=%d shared=%d linear=%d\n",
-            (unsigned long long)size, (unsigned long long)virt, fd,
-            (int)shared, (int)HasLinearMapping());
-  }
-#endif
   if (HasLinearMapping()) {
     // create a linear mapping. doing this runs the risk of destroying
     // things the kernel put into our address space that blink doesn't

@@ -11,11 +11,14 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-// Trace the in-process unix layer to host stderr (temporary diagnostic).
-#define USDBG(...)                                \
-  do {                                            \
-    fprintf(stderr, "[unixsock] " __VA_ARGS__);   \
-    fputc('\n', stderr);                          \
+// Trace the in-process unix layer to host stderr when BLINK_UNIXSOCK_DEBUG is
+// set in the environment; silent otherwise.
+#define USDBG(...)                                  \
+  do {                                              \
+    if (getenv("BLINK_UNIXSOCK_DEBUG")) {           \
+      fprintf(stderr, "[unixsock] " __VA_ARGS__);   \
+      fputc('\n', stderr);                          \
+    }                                               \
   } while (0)
 
 // Track which fds we created as in-process AF_UNIX sockets, and the listener /
