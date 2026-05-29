@@ -542,6 +542,7 @@ ssize_t blink_unix_writev(int fd, const struct iovec *iov, int iovcnt) {
 
 ssize_t blink_unix_recvmsg(int fd, struct msghdr *msg, int flags) {
   struct UnixConnFd *c = FindConnFd(fd);
+  { char b[96]; snprintf(b, sizeof(b), "recvmsg ENTER fd=%d vmid=%d found=%d", fd, g_blink_unixsock_vmid, c?1:0); USMARK(b); }
   if (!c) return recvmsg(fd, msg, flags);
   { static int rmc = 0; if (rmc < 12) { rmc++; char b[64];
     snprintf(b, sizeof(b), "recvmsg fd=%d side=%d", fd, c->side); USMARK(b); } }
