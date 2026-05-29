@@ -2196,9 +2196,30 @@ static i64 SysRecvmsg(struct Machine *m, i32 fildes, i64 msgaddr, i32 flags) {
   bool norestart = false;
   struct msghdr_linux gm;
   struct sockaddr_storage addr;
-  if ((flags = XlatRecvFlags(flags)) == -1) return -1;
-  if (GetNoRestart(m, fildes, &norestart) == -1) return -1;
-  if (CopyFromUserRead(m, &gm, msgaddr, sizeof(gm)) == -1) return -1;
+#ifdef __EMSCRIPTEN__
+  int rawflags = flags;
+#endif
+  if ((flags = XlatRecvFlags(flags)) == -1) {
+#ifdef __EMSCRIPTEN__
+    if (fildes >= 9) { extern void blink_usmark(const char*); char b[64];
+      snprintf(b, sizeof(b), "recvmsg(%d) BAD-FLAGS raw=0x%x", fildes, rawflags); blink_usmark(b); }
+#endif
+    return -1;
+  }
+  if (GetNoRestart(m, fildes, &norestart) == -1) {
+#ifdef __EMSCRIPTEN__
+    if (fildes >= 9) { extern void blink_usmark(const char*); char b[48];
+      snprintf(b, sizeof(b), "recvmsg(%d) NORESTART-FAIL", fildes); blink_usmark(b); }
+#endif
+    return -1;
+  }
+  if (CopyFromUserRead(m, &gm, msgaddr, sizeof(gm)) == -1) {
+#ifdef __EMSCRIPTEN__
+    if (fildes >= 9) { extern void blink_usmark(const char*); char b[48];
+      snprintf(b, sizeof(b), "recvmsg(%d) COPY-FAIL", fildes); blink_usmark(b); }
+#endif
+    return -1;
+  }
   memset(&msg, 0, sizeof(msg));
   iovaddr = Read64(gm.iov);
   iovlen = Read64(gm.iovlen);
