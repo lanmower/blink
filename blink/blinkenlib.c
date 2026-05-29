@@ -458,12 +458,17 @@ void setupProgram(bool withdebugger) {
 // process-global, so two VMs share files and can connect to each other's
 // sockets. The host pumps each VM's preempt slices (blinkenlib_preempt_resume)
 // and switches the active VM with blinkenlib_vm_set between slices.
-struct EmVm { struct Machine *m; struct System *s; };
+struct EmVm { struct Machine *m; struct System *s; int vmid; };
+// Set by the in-process unix-socket shim's compilation unit; we tag each VM so a
+// close() in one VM does not free another VM's socket entry (guest fd numbers
+// collide across concurrent VMs). See blink/unixsock_shim.c.
+extern int g_blink_unixsock_vmid;
+static int g_em_next_vmid = 0;
 
 EMSCRIPTEN_KEEPALIVE
 void *blinkenlib_vm_current(void) {
   struct EmVm *h = (struct EmVm *)malloc(sizeof(struct EmVm));
-  h->m = m; h->s = s;
+  h->m = m; h->s = s; h->vmid = g_blink_unixsock_vmid;
   return h;
 }
 
@@ -471,6 +476,7 @@ EMSCRIPTEN_KEEPALIVE
 void blinkenlib_vm_set(void *handle) {
   struct EmVm *h = (struct EmVm *)handle;
   m = h->m; s = h->s; g_machine = h->m;
+  g_blink_unixsock_vmid = h->vmid;
 }
 
 // Set up a NEW program in a FRESH (m,s) WITHOUT tearing down the current VM, so
@@ -489,6 +495,9 @@ void *blinkenlib_vm_spawn(int withdebugger) {
   char *bios = 0;
   // SetUp() allocates a fresh (m,s) into the globals without freeing the old.
   SetUp();
+  // Assign this VM a distinct id so its unix-socket entries are isolated from
+  // the other concurrent VM's (close() is VM-scoped).
+  g_blink_unixsock_vmid = ++g_em_next_vmid;
   LoadProgram(m, progname_string, progname_string, args, &vars, bios);
   PostLoadSetup();
   update_clstruct(m);

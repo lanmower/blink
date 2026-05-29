@@ -44,6 +44,7 @@ struct UnixSock {
                                // X server's epoll loop wakes to accept().
   enum UnixState state;
   int bound;                   // bind() has been called on this fd
+  int vmid;                    // which concurrent VM created this socket
   char path[UNIX_PATH_MAX];    // bind path (listeners) — empty otherwise
   int pending[UNIX_MAX_BACKLOG];  // queued server-side fds awaiting accept()
   int npending;
@@ -51,9 +52,19 @@ struct UnixSock {
 
 static struct UnixSock g_socks[UNIX_MAX_SOCKS];
 
+// Which concurrent VM is currently executing (set by blinkenlib on vm switch).
+// close() is VM-scoped: a close in VM-B must not free VM-A's socket entry even
+// if the guest fd numbers collide across the two VMs' fd spaces. Listener LOOKUP
+// stays global so a client VM can find the server VM's listener by path.
+int g_blink_unixsock_vmid = 0;
+
+// Match by (vmid, fd): guest fd numbers can collide across concurrent VMs, so a
+// socket op must only see the CURRENT VM's own entry.
 static struct UnixSock *FindByFd(int fd) {
   for (int i = 0; i < UNIX_MAX_SOCKS; i++)
-    if (g_socks[i].state != UNIX_FREE && g_socks[i].fd == fd) return &g_socks[i];
+    if (g_socks[i].state != UNIX_FREE && g_socks[i].fd == fd &&
+        g_socks[i].vmid == g_blink_unixsock_vmid)
+      return &g_socks[i];
   return 0;
 }
 
@@ -64,6 +75,7 @@ static struct UnixSock *AllocSlot(int fd) {
       memset(s, 0, sizeof(*s));
       s->fd = fd;
       s->wake_wr = -1;
+      s->vmid = g_blink_unixsock_vmid;
       s->state = UNIX_OPEN;
       for (int j = 0; j < UNIX_MAX_BACKLOG; j++) s->pending[j] = -1;
       return s;
