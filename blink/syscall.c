@@ -550,7 +550,6 @@ static int EmRunChildInline(struct Machine *parent, char *prog, char **argv,
   struct System *cs;
   struct Machine *cm, *saved_g;
   int rc, status;
-  extern struct Machine *g_machine;
   cs = NewSystem(parent->mode);
   if (!cs) return -1;
   cm = NewMachine(cs, 0);
