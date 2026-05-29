@@ -21,6 +21,14 @@
     fflush(stderr);                                 \
   } while (0)
 
+// Append a line to a fixed MEMFS marker file (cross-thread coherent, unlike the
+// per-thread emscripten stdout callbacks) so the host can observe the X-client
+// handshake events from a worker thread.
+static void USMARK(const char *line) {
+  FILE *mk = fopen("/em-unixsock.log", "a");
+  if (mk) { fputs(line, mk); fputc('\n', mk); fclose(mk); }
+}
+
 // Track which fds we created as in-process AF_UNIX sockets, and the listener /
 // connection state for each. Single-threaded-enough for blink's emscripten
 // build: the X server + clients are cooperatively scheduled in one host
@@ -186,7 +194,9 @@ int blink_unix_connect(int fd, const struct sockaddr *addr, socklen_t len) {
   char key[UNIX_PATH_MAX];
   if (UnixKey(addr, len, key) != 0) { errno = EINVAL; return -1; }
   USDBG("connect path='%s'", key);
+  { char b[160]; snprintf(b, sizeof(b), "connect vmid=%d path=%s", g_blink_unixsock_vmid, key); USMARK(b); }
   struct UnixSock *l = FindListenerByPath(key);
+  USMARK(l ? "connect: listener FOUND" : "connect: listener NOT FOUND (refused)");
   if (!l) {
     int n = 0;
     for (int i = 0; i < UNIX_MAX_SOCKS; i++) if (g_socks[i].state != UNIX_FREE) n++;
@@ -222,6 +232,7 @@ int blink_unix_connect(int fd, const struct sockaddr *addr, socklen_t len) {
 
 int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len) {
   struct UnixSock *s = FindByFd(fd);
+  { char b[120]; snprintf(b, sizeof(b), "accept fd=%d vmid=%d tracked=%d npending=%d", fd, g_blink_unixsock_vmid, s?1:0, s?s->npending:-1); USMARK(b); }
   USDBG("accept(fd=%d) vmid=%d tracked=%d npending=%d", fd,
         g_blink_unixsock_vmid, s ? 1 : 0, s ? s->npending : -1);
   if (!s) return accept(fd, addr, len);
