@@ -569,7 +569,8 @@ int blink_unix_getpeername(int fd, struct sockaddr *addr, socklen_t *len) {
 
 int blink_unix_close(int fd) {
   struct UnixConnFd *c = FindConnFd(fd);
-  if (c) { char b[80]; snprintf(b, sizeof(b), "close conn fd=%d side=%d vmid=%d", fd, c->side, g_blink_unixsock_vmid); USMARK(b); }
+  if (c) {
+    { char b[80]; snprintf(b, sizeof(b), "close conn fd=%d side=%d vmid=%d", fd, c->side, g_blink_unixsock_vmid); USMARK(b); }
     // Mark this endpoint closed so the peer sees EOF; free the conn at refs 0.
     if (c->side == 0) c->conn->a_open = 0; else c->conn->b_open = 0;
     if (--c->conn->refs <= 0) free(c->conn);
