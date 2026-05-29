@@ -2424,6 +2424,28 @@ static int UnXlatSocketType(int x) {
   return einval();
 }
 
+#ifdef __EMSCRIPTEN__
+// SO_PEERCRED for in-process unix fds: write a Linux struct ucred {pid,uid,gid}
+// (3x int32) so dix can authorize the local X client. Mirrors GetsockoptInt32's
+// safe guest-memory access. Returns 0 on success, -1 (errno) otherwise.
+static int GetsockoptPeercred(struct Machine *m, i64 optvaladdr,
+                              i64 optvalsizeaddr) {
+  u8 *psize;
+  u8 cred[12];
+  u32 want;
+  if (!(psize = (u8 *)SchlepRW(m, optvalsizeaddr, 4))) return -1;
+  want = Read32(psize);
+  if (want > sizeof(cred)) want = sizeof(cred);
+  if (!IsValidMemory(m, optvaladdr, want, PROT_WRITE)) return -1;
+  Write32(cred + 0, 1);  // pid
+  Write32(cred + 4, 0);  // uid (root)
+  Write32(cred + 8, 0);  // gid
+  CopyToUserWrite(m, optvaladdr, cred, want);
+  Write32(psize, want);
+  return 0;
+}
+#endif
+
 static int GetsockoptInt32(struct Machine *m, i32 fd, int level, int optname,
                            i64 optvaladdr, i64 optvalsizeaddr, int xlat(int)) {
   u8 *psize;
@@ -2534,6 +2556,12 @@ static int SysGetsockopt(struct Machine *m, i32 fildes, i32 level, i32 optname,
                                  optvalsizeaddr, XlatErrno);
         case SO_LINGER_LINUX:
           return GetsockoptLinger(m, fildes, optvaladdr, optvalsizeaddr);
+#ifdef __EMSCRIPTEN__
+        case 17:  // SO_PEERCRED
+          if (blink_unix_is_tracked(fildes))
+            return GetsockoptPeercred(m, optvaladdr, optvalsizeaddr);
+          break;
+#endif
         default:
           break;
       }
