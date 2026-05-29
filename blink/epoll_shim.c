@@ -2,6 +2,7 @@
 // poll()-backed epoll() for the wasm build (no <sys/epoll.h> in the emscripten
 // sysroot). Level-triggered; enough for an X server event loop.
 #include "blink/epoll_shim.h"
+#include "blink/unixsock_shim.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -113,10 +114,29 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents,
     idx[n] = j;
     n++;
   }
-  // Each VM runs on its own pthread (dual-worker model), so a blocking poll only
-  // blocks THAT thread — concurrent VMs interleave via real preemptive
-  // scheduling. Honor the requested timeout.
-  int rc = poll(pfds, n, timeout);
+  // In-process unix LISTENER readiness lives in shared memory (npending), not in
+  // the emscripten host pipe (whose poll is NOT coherent across worker threads),
+  // so a blocking poll on the listener fd would never wake when a peer thread
+  // connects. Pre-check listener readiness from shared memory; if a connection is
+  // pending, synthesize POLLIN without blocking. Also CAP the poll timeout so we
+  // re-check shared listener state periodically rather than block forever on a
+  // pipe that won't signal cross-thread.
+  for (int k = 0; k < n; k++)
+    if (blink_unix_listener_readable(pfds[k].fd) == 1) pfds[k].revents |= POLLIN;
+  int presynth = 0;
+  for (int k = 0; k < n; k++) if (pfds[k].revents) presynth = 1;
+  int rc;
+  if (presynth) {
+    rc = 0; for (int k = 0; k < n; k++) if (pfds[k].revents) rc++;
+  } else {
+    int to = timeout; if (to < 0 || to > 20) to = 20;  // cap so we recheck npending
+    rc = poll(pfds, n, to);
+    for (int k = 0; k < n; k++)
+      if (blink_unix_listener_readable(pfds[k].fd) == 1) {
+        if (!pfds[k].revents) rc++;
+        pfds[k].revents |= POLLIN;
+      }
+  }
   if (rc <= 0) return rc;  // 0 = timeout, -1 = error
   int out = 0;
   for (int k = 0; k < n && out < maxevents; k++) {

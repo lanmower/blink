@@ -91,6 +91,18 @@ static struct UnixSock *FindListenerByPath(const char *path) {
   return 0;
 }
 
+// Shared-memory readiness for a tracked LISTENER fd (cross-thread coherent),
+// bypassing the emscripten host pipe whose poll is not synchronized across
+// worker threads. Match by fd within the current VM (the server polls its own
+// listener fd). 1 = pending conn, 0 = listener but idle, -1 = not a listener.
+int blink_unix_listener_readable(int fd) {
+  for (int i = 0; i < UNIX_MAX_SOCKS; i++)
+    if (g_socks[i].state == UNIX_LISTENING && g_socks[i].fd == fd &&
+        g_socks[i].vmid == g_blink_unixsock_vmid)
+      return g_socks[i].npending > 0 ? 1 : 0;
+  return -1;
+}
+
 int blink_unix_socket(int domain, int type, int protocol) {
   USDBG("socket(domain=%d type=%d proto=%d) AF_UNIX=%d", domain, type, protocol,
         AF_UNIX);

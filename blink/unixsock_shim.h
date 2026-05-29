@@ -22,6 +22,13 @@ int blink_unix_connect(int fd, const struct sockaddr *addr, socklen_t len);
 int blink_unix_listen(int fd, int backlog);
 int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len);
 int blink_unix_close(int fd);
+// Cross-thread readiness for a tracked in-process unix LISTENER fd, checked from
+// shared memory (npending) instead of an emscripten host pipe (whose poll is not
+// coherent across worker threads). Returns: 1 = a connection is pending (POLLIN),
+// 0 = tracked listener but nothing pending, -1 = not a tracked listener (caller
+// should fall through to the normal host poll). VM-scope-agnostic on purpose:
+// any thread polling this fd sees pending connections in the shared registry.
+int blink_unix_listener_readable(int fd);
 int blink_unix_setsockopt(int fd, int level, int optname, const void *optval,
                           socklen_t optlen);
 int blink_unix_getsockopt(int fd, int level, int optname, void *optval,
