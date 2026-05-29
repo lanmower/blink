@@ -1030,18 +1030,32 @@ int XlatSockaddrToHost(struct sockaddr_storage *dst,
       }
       dst_un = (struct sockaddr_un *)dst;
       src_un = (const struct sockaddr_un_linux *)src;
-      n = strnlen(src_un->path,
-                  MIN(srclen - offsetof(struct sockaddr_un_linux, path),
-                      sizeof(src_un->path)));
-      if (n >= sizeof(dst_un->sun_path)) {
+      {
+        size_t pathmax = MIN(srclen - offsetof(struct sockaddr_un_linux, path),
+                             sizeof(src_un->path));
+        // ABSTRACT sockets (Linux) have path[0]=='\0' and a name in the bytes
+        // that follow, up to addrlen — NOT NUL-terminated. strnlen() would drop
+        // the whole name (returns 0), collapsing every abstract address to the
+        // empty key and breaking e.g. the X11 abstract socket @/tmp/.X11-unix/Xn.
+        // Preserve the full byte range for abstract; C-string length otherwise.
+        int abstract = (pathmax > 0 && src_un->path[0] == '\0');
+        if (abstract) {
+          n = pathmax;
+        } else {
+          n = strnlen(src_un->path, pathmax);
+        }
+      }
+      if (n > sizeof(dst_un->sun_path)) {
         LOGF("sockaddr_un path too long for host");
         return einval();
       }
       memset(dst_un, 0, sizeof(*dst_un));
       dst_un->sun_family = AF_UNIX;
       if (n) memcpy(dst_un->sun_path, src_un->path, n);
-      dst_un->sun_path[n] = 0;
-      return sizeof(struct sockaddr_un);
+      if (n < sizeof(dst_un->sun_path)) dst_un->sun_path[n] = 0;
+      // Return the actual address length so callers (and the unix-socket shim's
+      // UnixKey) see the full abstract name, not a truncated C-string.
+      return (i32)(offsetof(struct sockaddr_un, sun_path) + n);
     }
     case AF_INET_LINUX: {
       struct sockaddr_in *dst_in;
