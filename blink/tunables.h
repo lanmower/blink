@@ -42,9 +42,18 @@
 #define kFutexMax     100
 #define kRedzoneSize  128
 #define kSmcQueueSize 32
-#define kMaxMapSize   (UINT64_C(8) * 1024 * 1024 * 1024)
-#define kMaxResident  (UINT64_C(8) * 1024 * 1024 * 1024)
-#define kMaxVirtual   (kMaxResident * 8)
+// Memory ceilings. Under the wasm32 build the whole emulator + guest live in a
+// single linear memory capped at 4GiB (MAXIMUM_MEMORY); blink eagerly host-backs
+// guest pages, so a guest mmap/brk sized against a huge ceiling makes blink ask
+// emscripten for memory it cannot grow into ("Cannot enlarge memory", fatal).
+// Capping kMaxResident/kMaxVirtual to fit the wasm budget makes SysMmapImpl/
+// SysBrk return a graceful ENOMEM (the rss/vss guards) instead, so guest
+// allocators (musl) fall back to a smaller arena and large dynamic binaries
+// (e.g. Xorg/Xvfb) start instead of aborting the whole runtime. Native builds
+// are unaffected in practice (real hosts overcommit far past these anyway).
+#define kMaxMapSize   (UINT64_C(1) * 1024 * 1024 * 1024)
+#define kMaxResident  (UINT64_C(1536) * 1024 * 1024)
+#define kMaxVirtual   (kMaxResident * 4)
 #define kMaxAncillary 1000
 #define kMaxShebang   512
 #define kMaxSigDepth  8
