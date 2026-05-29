@@ -82,6 +82,9 @@
 #include "blink/util.h"
 #include "blink/vfs.h"
 #include "blink/xlat.h"
+#ifdef __EMSCRIPTEN__
+#include "blink/unixsock_shim.h"
+#endif
 
 #ifdef __linux
 #include <sys/prctl.h>
@@ -4901,7 +4904,24 @@ static int Poll(struct Machine *m, i64 fdsaddr, u64 nfds,
           }
           UNLOCK(&m->system->fds.lock);
           if (fd) {
-            hfds[0].fd = fildes;
+            int hostfd = fd->fildes;
+#ifdef __EMSCRIPTEN__
+            // In-process AF_UNIX listener readiness lives in shared memory
+            // (npending), not in the emscripten host pipe whose poll() is NOT
+            // coherent across worker threads. The X server (Xvfb dix
+            // WaitForSomething) polls its listener fd here; a peer thread's
+            // connect() enqueues a pending conn + pokes the wake pipe, but the
+            // wake byte is invisible to this thread's host poll(). Short-circuit
+            // on the shared-memory flag so accept() actually fires.
+            ev = Read16(gfds[i].events);
+            if ((ev & POLLIN_LINUX) &&
+                blink_unix_listener_readable(hostfd) == 1) {
+              Write16(gfds[i].revents, POLLIN_LINUX);
+              ++rc;
+              continue;
+            }
+#endif
+            hfds[0].fd = hostfd;
             ev = Read16(gfds[i].events);
             hfds[0].events = (((ev & POLLIN_LINUX) ? POLLIN : 0) |
                               ((ev & POLLOUT_LINUX) ? POLLOUT : 0) |
