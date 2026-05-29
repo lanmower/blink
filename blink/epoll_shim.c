@@ -119,6 +119,7 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents,
   // slice polls again. Converts blocking waits into cooperative spins.
   (void)timeout;
   int rc = poll(pfds, n, 0);
+  if (rc > 0) { fprintf(stderr, "[epoll] wait rc=%d nfds=%d\n", rc, n); fflush(stderr); }
   if (rc <= 0) return rc;  // 0 = nothing ready now, -1 = error
   int out = 0;
   for (int k = 0; k < n && out < maxevents; k++) {
