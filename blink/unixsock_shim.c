@@ -3,11 +3,20 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+
+// Trace the in-process unix layer to host stderr (temporary diagnostic).
+#define USDBG(...)                                \
+  do {                                            \
+    fprintf(stderr, "[unixsock] " __VA_ARGS__);   \
+    fputc('\n', stderr);                          \
+  } while (0)
 
 // Track which fds we created as in-process AF_UNIX sockets, and the listener /
 // connection state for each. Single-threaded-enough for blink's emscripten
@@ -67,6 +76,8 @@ static struct UnixSock *FindListenerByPath(const char *path) {
 }
 
 int blink_unix_socket(int domain, int type, int protocol) {
+  USDBG("socket(domain=%d type=%d proto=%d) AF_UNIX=%d", domain, type, protocol,
+        AF_UNIX);
   if (domain != AF_UNIX) return socket(domain, type, protocol);
   // Back the socket fd with a pipe: the read end is the caller's fd (real,
   // pollable, closable); the write end is kept so connect() can poke a wakeup
@@ -88,9 +99,12 @@ static const char *UnixPath(const struct sockaddr *addr, socklen_t len) {
 
 int blink_unix_bind(int fd, const struct sockaddr *addr, socklen_t len) {
   struct UnixSock *s = FindByFd(fd);
+  USDBG("bind(fd=%d) tracked=%d fam=%d", fd, s ? 1 : 0,
+        addr ? addr->sa_family : -1);
   if (!s) return bind(fd, addr, len);  // not ours -> libc
   const char *path = UnixPath(addr, len);
   if (!path) { errno = EINVAL; return -1; }
+  USDBG("bind path='%s'", path);
   if (FindListenerByPath(path)) { errno = EADDRINUSE; return -1; }
   strncpy(s->path, path, UNIX_PATH_MAX - 1);
   s->path[UNIX_PATH_MAX - 1] = 0;
@@ -99,6 +113,8 @@ int blink_unix_bind(int fd, const struct sockaddr *addr, socklen_t len) {
 
 int blink_unix_listen(int fd, int backlog) {
   struct UnixSock *s = FindByFd(fd);
+  USDBG("listen(fd=%d) tracked=%d path='%s'", fd, s ? 1 : 0,
+        s ? s->path : "(none)");
   if (!s) return listen(fd, backlog);
   (void)backlog;
   if (!s->path[0]) { errno = EINVAL; return -1; }  // must bind() first
@@ -153,6 +169,49 @@ int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len) {
     }
   }
   return conn;  // already a connected socketpair end
+}
+
+// Xtrans calls setsockopt(SO_REUSEADDR), getsockopt(SO_ERROR), getsockname()
+// on the listener fd. Our fd is a pipe, so the libc socket-option calls would
+// fail with ENOTSOCK and Xtrans treats that as "Unable to open socket". For
+// tracked fds these are no-ops / synthesized; untracked fds fall through.
+int blink_unix_setsockopt(int fd, int level, int optname, const void *optval,
+                          socklen_t optlen) {
+  if (FindByFd(fd)) { USDBG("setsockopt(fd=%d lvl=%d opt=%d) noop", fd, level, optname); return 0; }
+  return setsockopt(fd, level, optname, optval, optlen);
+}
+
+int blink_unix_getsockopt(int fd, int level, int optname, void *optval,
+                          socklen_t *optlen) {
+  if (FindByFd(fd)) {
+    // SO_ERROR (and friends) -> 0; report a 4-byte zero where there's room.
+    if (optval && optlen && *optlen >= (socklen_t)sizeof(int)) {
+      *(int *)optval = 0;
+      *optlen = sizeof(int);
+    } else if (optlen) {
+      *optlen = 0;
+    }
+    USDBG("getsockopt(fd=%d lvl=%d opt=%d) ->0", fd, level, optname);
+    return 0;
+  }
+  return getsockopt(fd, level, optname, optval, optlen);
+}
+
+int blink_unix_getsockname(int fd, struct sockaddr *addr, socklen_t *len) {
+  struct UnixSock *s = FindByFd(fd);
+  if (!s) return getsockname(fd, addr, len);
+  if (addr && len) {
+    struct sockaddr_un un;
+    memset(&un, 0, sizeof(un));
+    un.sun_family = AF_UNIX;
+    strncpy(un.sun_path, s->path, sizeof(un.sun_path) - 1);
+    socklen_t n = (socklen_t)(offsetof(struct sockaddr_un, sun_path) +
+                              strlen(un.sun_path) + 1);
+    if (n > *len) n = *len;
+    memcpy(addr, &un, n);
+    *len = n;
+  }
+  return 0;
 }
 
 int blink_unix_close(int fd) {

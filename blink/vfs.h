@@ -463,12 +463,18 @@ ssize_t VfsPathBuild(struct VfsInfo *, struct VfsInfo *, bool,
 #undef VfsListen
 #undef VfsAccept
 #undef VfsClose
-#define VfsSocket  blink_unix_socket
-#define VfsBind    blink_unix_bind
-#define VfsConnect blink_unix_connect
-#define VfsListen  blink_unix_listen
-#define VfsAccept  blink_unix_accept
-#define VfsClose   blink_unix_close
+#undef VfsSetsockopt
+#undef VfsGetsockopt
+#undef VfsGetsockname
+#define VfsSocket      blink_unix_socket
+#define VfsBind        blink_unix_bind
+#define VfsConnect     blink_unix_connect
+#define VfsListen      blink_unix_listen
+#define VfsAccept      blink_unix_accept
+#define VfsClose       blink_unix_close
+#define VfsSetsockopt  blink_unix_setsockopt
+#define VfsGetsockopt  blink_unix_getsockopt
+#define VfsGetsockname blink_unix_getsockname
 #endif /* __EMSCRIPTEN__ */
 
 #endif /* BLINK_VFS_H_ */

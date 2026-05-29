@@ -22,6 +22,11 @@ int blink_unix_connect(int fd, const struct sockaddr *addr, socklen_t len);
 int blink_unix_listen(int fd, int backlog);
 int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len);
 int blink_unix_close(int fd);
+int blink_unix_setsockopt(int fd, int level, int optname, const void *optval,
+                          socklen_t optlen);
+int blink_unix_getsockopt(int fd, int level, int optname, void *optval,
+                          socklen_t *optlen);
+int blink_unix_getsockname(int fd, struct sockaddr *addr, socklen_t *len);
 
 #endif /* __EMSCRIPTEN__ */
 #endif /* BLINK_UNIXSOCK_SHIM_H_ */
