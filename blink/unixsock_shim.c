@@ -397,6 +397,7 @@ int blink_unix_accept(int fd, struct sockaddr *addr, socklen_t *len) {
       *len = sizeof(sa_family_t);
     }
   }
+  { char b[64]; snprintf(b, sizeof(b), "accept RETURN fd=%d", cb->fd); USMARK(b); }
   return cb->fd;  // connected endpoint, data via shared rings
 }
 
@@ -523,7 +524,12 @@ int blink_unix_poll(struct pollfd *fds, unsigned long nfds, int timeout) {
   for (unsigned long i = 0; i < nfds; i++) {
     fds[i].revents = 0;
     int lr = blink_unix_listener_readable(fds[i].fd);
-    if (lr >= 0) { if (lr == 1 && (fds[i].events & POLLIN)) { fds[i].revents |= POLLIN; ready++; } continue; }
+    if (lr >= 0) {
+      static int lpc = 0;
+      if (lpc < 8) { lpc++; char b[80];
+        snprintf(b, sizeof(b), "poll listener fd=%d vmid=%d lr=%d", fds[i].fd, g_blink_unixsock_vmid, lr); USMARK(b); }
+      if (lr == 1 && (fds[i].events & POLLIN)) { fds[i].revents |= POLLIN; ready++; } continue;
+    }
     int cr = blink_unix_conn_readable(fds[i].fd);
     if (cr >= 0) {
       static int pc = 0;
@@ -555,6 +561,7 @@ int blink_unix_poll(struct pollfd *fds, unsigned long nfds, int timeout) {
 }
 
 int blink_unix_getpeername(int fd, struct sockaddr *addr, socklen_t *len) {
+  if (FindConnFd(fd)) { char b[64]; snprintf(b, sizeof(b), "getpeername conn fd=%d vmid=%d", fd, g_blink_unixsock_vmid); USMARK(b); }
   if (FindByFd(fd) || FindConnFd(fd)) {
     // In-process unix peer: report AF_UNIX with an empty path. Xtrans uses this
     // only for local access control, which our loopback layer always permits.
