@@ -449,4 +449,26 @@ ssize_t VfsPathBuild(struct VfsInfo *, struct VfsInfo *, bool,
 #define VfsMsync       msync
 #endif
 
+#ifdef __EMSCRIPTEN__
+// Emscripten's libc has no working server-side AF_UNIX (bind/listen/accept), so
+// route socket/bind/connect/listen/accept through an in-process AF_UNIX layer
+// (blink/unixsock_shim.c). Non-AF_UNIX calls fall straight through to libc, so
+// only the X server's unix listener path changes. close() must route too so the
+// shim can reclaim listener/pending state. These re-#define the DISABLE_VFS
+// pass-throughs above; the wrappers are the single source of truth for sockets.
+#include "blink/unixsock_shim.h"
+#undef VfsSocket
+#undef VfsBind
+#undef VfsConnect
+#undef VfsListen
+#undef VfsAccept
+#undef VfsClose
+#define VfsSocket  blink_unix_socket
+#define VfsBind    blink_unix_bind
+#define VfsConnect blink_unix_connect
+#define VfsListen  blink_unix_listen
+#define VfsAccept  blink_unix_accept
+#define VfsClose   blink_unix_close
+#endif /* __EMSCRIPTEN__ */
+
 #endif /* BLINK_VFS_H_ */
