@@ -158,7 +158,15 @@ int blink_unix_connect(int fd, const struct sockaddr *addr, socklen_t len) {
   if (UnixKey(addr, len, key) != 0) { errno = EINVAL; return -1; }
   USDBG("connect path='%s'", key);
   struct UnixSock *l = FindListenerByPath(key);
-  if (!l) { errno = ECONNREFUSED; return -1; }
+  if (!l) {
+    // Dump the registry so we can see whether the server's listener is visible
+    // here (shared g_socks across VMs) or not.
+    for (int di = 0; di < UNIX_MAX_SOCKS; di++)
+      if (g_socks[di].state != UNIX_FREE)
+        USDBG("  registry[%d] state=%d fd=%d path='%s'", di,
+              (int)g_socks[di].state, g_socks[di].fd, g_socks[di].path);
+    errno = ECONNREFUSED; return -1;
+  }
   if (l->npending >= UNIX_MAX_BACKLOG) { errno = EAGAIN; return -1; }
   // Real bidirectional data channel between client and server.
   int sp[2];
