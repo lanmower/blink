@@ -470,6 +470,7 @@ ssize_t blink_unix_readv(int fd, const struct iovec *iov, int iovcnt) {
     total += (ssize_t)got;
     if (got < iov[i].iov_len) break;
   }
+  { char b[80]; snprintf(b, sizeof(b), "readv fd=%d side=%d got=%zd", fd, c->side, total); USMARK(b); }
   return total;
 }
 
@@ -487,6 +488,7 @@ ssize_t blink_unix_writev(int fd, const struct iovec *iov, int iovcnt) {
     if (w < iov[i].iov_len) break;
   }
   if (total == 0) { errno = EAGAIN; return -1; }
+  { char b[80]; snprintf(b, sizeof(b), "writev fd=%d side=%d put=%zd", fd, c->side, total); USMARK(b); }
   return total;
 }
 
