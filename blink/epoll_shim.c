@@ -126,7 +126,11 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents,
     // Connected in-process endpoints carry data in shared rings, invisible to
     // the host pipe poll; surface ring readiness here too so the X server wakes
     // to read its clients.
-    if (blink_unix_conn_readable(pfds[k].fd) == 1) pfds[k].revents |= POLLIN;
+    if (blink_unix_conn_readable(pfds[k].fd) == 1) {
+      pfds[k].revents |= POLLIN;
+      { extern void blink_usmark(const char*); char b[64];
+        snprintf(b, sizeof(b), "epoll conn-ready fd=%d", pfds[k].fd); blink_usmark(b); }
+    }
   }
   int presynth = 0;
   for (int k = 0; k < n; k++) if (pfds[k].revents) presynth = 1;

@@ -29,6 +29,8 @@ static void USMARK(const char *line) {
   FILE *mk = fopen("/em-unixsock.log", "a");
   if (mk) { fputs(line, mk); fputc('\n', mk); fclose(mk); }
 }
+// Public alias so other shims (epoll) can append to the same marker log.
+void blink_usmark(const char *line) { USMARK(line); }
 
 // Track which fds we created as in-process AF_UNIX sockets, and the listener /
 // connection state for each. Single-threaded-enough for blink's emscripten
@@ -468,6 +470,9 @@ ssize_t blink_unix_readv(int fd, const struct iovec *iov, int iovcnt) {
   struct UnixConnFd *c = FindConnFd(fd);
   if (!c) return readv(fd, iov, iovcnt);
   struct UnixRing *r = ConnInRing(c);
+  { static int rc2 = 0; if (rc2 < 20) { rc2++; char b[96];
+    snprintf(b, sizeof(b), "readv ENTER fd=%d side=%d vmid=%d used=%u peeropen=%d",
+             fd, c->side, g_blink_unixsock_vmid, RingUsed(r), ConnPeerOpen(c)); USMARK(b); } }
   if (RingUsed(r) == 0) {
     if (!ConnPeerOpen(c)) return 0;  // EOF
     errno = EAGAIN;                  // nonblocking: caller polls + retries
@@ -504,6 +509,8 @@ ssize_t blink_unix_writev(int fd, const struct iovec *iov, int iovcnt) {
 ssize_t blink_unix_recvmsg(int fd, struct msghdr *msg, int flags) {
   struct UnixConnFd *c = FindConnFd(fd);
   if (!c) return recvmsg(fd, msg, flags);
+  { static int rmc = 0; if (rmc < 12) { rmc++; char b[64];
+    snprintf(b, sizeof(b), "recvmsg fd=%d side=%d", fd, c->side); USMARK(b); } }
   (void)flags;
   ssize_t n = blink_unix_readv(fd, msg->msg_iov, (int)msg->msg_iovlen);
   if (n >= 0) { msg->msg_controllen = 0; msg->msg_flags = 0; }
