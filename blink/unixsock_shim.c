@@ -3,6 +3,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -60,6 +61,11 @@ struct UnixSock {
 };
 
 static struct UnixSock g_socks[UNIX_MAX_SOCKS];
+
+// Thread-local current-vmid (defined here so the connected-fd table below can
+// reference it; commentary at first use farther down). Each VM thread has its
+// own current vmid so listener-readiness / fd-scoping use THIS thread's VM.
+_Thread_local int g_blink_unixsock_vmid = 0;
 
 // ---- In-process connected-pair data path -----------------------------------
 // socketpair() is unsupported on the emscripten host, and even a pipe-pair would
@@ -161,7 +167,7 @@ static int ConnPeerOpen(struct UnixConnFd *c) {
 // listener-readable + close VM-scoping checks use THIS thread's VM, not whichever
 // VM the main thread spawned last (a shared global got clobbered to the client's
 // vmid, breaking the server thread's listener-readiness match).
-_Thread_local int g_blink_unixsock_vmid = 0;
+// (g_blink_unixsock_vmid is defined near the top of this file.)
 
 // Match by (vmid, fd): guest fd numbers can collide across concurrent VMs, so a
 // socket op must only see the CURRENT VM's own entry.
