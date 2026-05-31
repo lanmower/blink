@@ -4793,6 +4793,22 @@ static i32 Select(struct Machine *m,          //
     } else {
       wait = FromMilliseconds(kPollingMs);
     }
+#ifdef __EMSCRIPTEN__
+    {
+      /* blink/wasm: same framebuffer-republish as the SysPoll idle loop. The X
+       * server's WaitForSomething may sit in select()/pselect() here rather than
+       * poll() (musl ospoll routing), and like the poll path the dix
+       * BlockHandler only fires between dispatch-loop iterations, so a quiescent
+       * server freezes the host canvas on a stale generation. Bump fb_generation
+       * each idle select tick from the fb-owning machine so the host re-blits the
+       * live screen. Gated on the fb-owning machine so non-X guests are
+       * unaffected. Mirrors syscall.c SysPoll. */
+      extern struct Machine *fb_machine;
+      extern u32 fb_generation;
+      extern u64 fb_vaddr;
+      if (fb_vaddr && fb_machine == m) fb_generation++;
+    }
+#endif
     nanosleep(&wait, 0);
   }
   if (sigmaskp_guest) {
