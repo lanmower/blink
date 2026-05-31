@@ -111,6 +111,20 @@ u32 fb_width = 0;
 u32 fb_height = 0;
 u32 fb_stride = 0;   /* bytes per row; 0 means width*4 */
 u32 fb_generation = 0;
+/*
+ * The Machine whose address space owns the framebuffer. `m`/`s` are
+ * _Thread_local: each VM runs on its own pthread, so the X server's machine
+ * pointer only exists on the server worker thread. The host's display blit
+ * runs on the MAIN thread, where the thread-local `m` is a different (or null)
+ * machine, so SpyAddress(m, fb_vaddr) walks the wrong page tables and returns
+ * 0 (the "all-zero framebuffer under a live X server" bug). We therefore
+ * capture the REGISTERING machine here (set on the server thread at fb_register
+ * time) into a NON-thread-local global and resolve the framebuffer against it.
+ * Reads are safe cross-thread: page tables live in the shared linear memory and
+ * the blit only reads. Mirrors the fb_* geometry globals, which are already
+ * shared and already read correctly across threads.
+ */
+struct Machine *fb_machine = 0;
 
 /*
  * Input event ring buffer (host -> guest).
@@ -728,13 +742,34 @@ u32 blinkenlib_get_fb_generation(void) { return fb_generation; }
 
 /*
  * Host pointer to the start of the registered framebuffer, or 0 if the guest
- * has not registered one yet. Convenience wrapper over spy_address(fb_vaddr).
+ * has not registered one yet. Resolves against fb_machine (the machine that
+ * registered the framebuffer), NOT the calling thread's _Thread_local `m`, so
+ * the host's main-thread display blit can map a framebuffer that a worker-VM
+ * (e.g. the X server pthread) owns. Falls back to `m` for the single-VM case
+ * where no separate registrar thread exists.
  */
 EMSCRIPTEN_KEEPALIVE
 u8 *blinkenlib_get_fb_ptr(void) {
-  if (!fb_vaddr || !m) return 0;
+  struct Machine *fm = fb_machine ? fb_machine : m;
+  if (!fb_vaddr || !fm) return 0;
   BEGIN_NO_PAGE_FAULTS;
-  return SpyAddress(m, fb_vaddr);
+  return SpyAddress(fm, fb_vaddr);
+  END_NO_PAGE_FAULTS;
+}
+
+/*
+ * Resolve an arbitrary framebuffer guest virtual address to a host pointer
+ * against fb_machine. The host fbView page-walks the framebuffer page-by-page
+ * (guest pages map to non-contiguous host pages); each page must resolve
+ * against the framebuffer-owning machine, not the caller's thread-local one.
+ * Returns 0 for an unmapped page (caller leaves it transparent/previous).
+ */
+EMSCRIPTEN_KEEPALIVE
+u8 *blinkenlib_fb_spy_address(u64 virtual_address) {
+  struct Machine *fm = fb_machine ? fb_machine : m;
+  if (!fm) return 0;
+  BEGIN_NO_PAGE_FAULTS;
+  return SpyAddress(fm, virtual_address);
   END_NO_PAGE_FAULTS;
 }
 

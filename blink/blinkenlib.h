@@ -77,11 +77,15 @@ u8 *blinkenlib_spy_address(u64 virtual_address);
  * Framebuffer registration, published by the guest via the synthetic
  * SYS_blinkenlib_fb_register syscall and read by the JS host.
  */
+struct Machine;
 extern u64 fb_vaddr;
 extern u32 fb_width;
 extern u32 fb_height;
 extern u32 fb_stride;
 extern u32 fb_generation;
+/* Machine that owns the framebuffer's address space (set at fb_register time
+ * on the registering VM thread; read cross-thread by the host display blit). */
+extern struct Machine *fb_machine;
 
 u64 blinkenlib_get_fb_vaddr(void);
 u32 blinkenlib_get_fb_width(void);
@@ -89,6 +93,9 @@ u32 blinkenlib_get_fb_height(void);
 u32 blinkenlib_get_fb_stride(void);
 u32 blinkenlib_get_fb_generation(void);
 u8 *blinkenlib_get_fb_ptr(void);
+/* Like blinkenlib_spy_address but resolves against fb_machine (cross-VM safe
+ * for the framebuffer page-walk). */
+u8 *blinkenlib_fb_spy_address(u64 virtual_address);
 
 /*
  * Input event device (host -> guest). blinkenlib_push_input is called by the

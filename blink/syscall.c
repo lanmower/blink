@@ -5726,12 +5726,17 @@ static int SysEpollWait(struct Machine *m, i32 epfd, i64 eventsaddr,
 #include "blink/blinkenlib.h"
 static int SysBlinkenlibFbRegister(struct Machine *m, u64 vaddr, u64 width,
                                    u64 height, u64 stride) {
-  (void)m;
   if (vaddr) {
     fb_vaddr = vaddr;
     fb_width = (u32)width;
     fb_height = (u32)height;
     fb_stride = (u32)stride;
+    /* Capture the registering machine. This syscall runs on the VM that owns
+     * the framebuffer (e.g. the X server pthread); the host display blit, which
+     * runs on the main thread with a different _Thread_local `m`, resolves the
+     * framebuffer against this stored machine so a worker-VM framebuffer is
+     * readable cross-thread. */
+    fb_machine = m;
   }
   fb_generation++;
   return 0;
