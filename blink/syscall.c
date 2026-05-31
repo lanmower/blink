@@ -5007,6 +5007,26 @@ static int Poll(struct Machine *m, i64 fdsaddr, u64 nfds,
         if (CompareTime(remain, wait) < 0) {
           wait = remain;
         }
+#ifdef __EMSCRIPTEN__
+        {
+          /* blink/wasm: the framebuffer is published to the JS host by the X
+           * server's dix BlockHandler, which only runs between dispatch-loop
+           * iterations. When the server idles here in poll() (e.g. an X client
+           * is mapped + drawn but quiescent, waiting on its own timer), the
+           * dispatch loop does NOT cycle, so the BlockHandler stops firing and
+           * the host canvas freezes on a stale generation even though the
+           * window content is already in the screen pixmap. Bump the fb
+           * generation each poll tick from the fb-owning machine so the host
+           * re-blits the live screen while the server is blocked here. The fb
+           * pointer + geometry are already stored globally (set at fb_register);
+           * only the generation needs to advance to trigger a host re-read.
+           * Gated on the fb-owning machine so non-X guests are unaffected. */
+          extern struct Machine *fb_machine;
+          extern u32 fb_generation;
+          extern u64 fb_vaddr;
+          if (fb_vaddr && fb_machine == m) fb_generation++;
+        }
+#endif
         nanosleep(&wait, 0);
       }
       if (rc != -1) {
