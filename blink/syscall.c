@@ -5713,14 +5713,6 @@ static i32 EpollPwait(struct Machine *m, i32 epfd, i64 eventsaddr,
         if (CheckInterrupt(m, false)) {
           break;
         }
-      } else if (rc == 0) {
-#ifdef __EMSCRIPTEN__
-        /* Timed out on the capped interval. If the real deadline has not yet
-         * arrived, loop so the guest re-polls its fds; otherwise return the
-         * genuine timeout. */
-        if (CompareTime(GetTime(), deadline) < 0) continue;
-#endif
-        break;
       } else {
         break;
       }
