@@ -5682,6 +5682,27 @@ static i32 EpollPwait(struct Machine *m, i32 epfd, i64 eventsaddr,
       } else {
         waitfor = GetZeroTime();
       }
+#ifdef __EMSCRIPTEN__
+      /* blink/wasm: cap the host epoll wait at kPollingMs and loop. The X
+       * server's ospoll uses epoll_wait, but blink's in-process AF_UNIX layer
+       * (g_socks) is a userspace shim whose readiness is NOT visible to the
+       * host epoll set, so a host epoll_pwait with an unbounded/long timeout
+       * blocks the worker thread and the server never wakes when an in-process
+       * X client writes -> dispatch stops, the framebuffer freezes, client
+       * draws are never serviced (witnessed: gen frozen, fb all-zero with a
+       * live forever client). Bounding each host wait at the polling interval
+       * makes the server re-enter its dispatch loop every kPollingMs so it
+       * re-checks the in-process sockets and processes client requests. Mirrors
+       * the SysPoll/Select poll-loops. */
+      {
+        struct timespec cap = FromMilliseconds(kPollingMs);
+        if (CompareTime(waitfor, cap) > 0) waitfor = cap;
+        extern struct Machine *fb_machine;
+        extern u32 fb_generation;
+        extern u64 fb_vaddr;
+        if (fb_vaddr && fb_machine == m) fb_generation++;
+      }
+#endif
 #if defined(HAVE_EPOLL_PWAIT2) && !defined(MUSL_CROSS_MAKE)
       rc = epoll_pwait2(epfd, events, maxevents, &waitfor, &oldmask);
 #else
@@ -5692,6 +5713,14 @@ static i32 EpollPwait(struct Machine *m, i32 epfd, i64 eventsaddr,
         if (CheckInterrupt(m, false)) {
           break;
         }
+      } else if (rc == 0) {
+#ifdef __EMSCRIPTEN__
+        /* Timed out on the capped interval. If the real deadline has not yet
+         * arrived, loop so the guest re-polls its fds; otherwise return the
+         * genuine timeout. */
+        if (CompareTime(GetTime(), deadline) < 0) continue;
+#endif
+        break;
       } else {
         break;
       }
